@@ -1,0 +1,28 @@
+{
+  "policies": [
+    {
+      "policy_number": "BX7-4402",
+      "holder_name": "Marcus Halloway",
+      "effective_date": "2025-03-01",
+      "expiry_date": "2026-03-01"
+    },
+    {
+      "policy_number": "BX7-4420",
+      "holder_name": "Priya Raghunathan",
+      "effective_date": "2025-11-15",
+      "expiry_date": "2026-11-15"
+    },
+    {
+      "policy_number": "KD4-1188",
+      "holder_name": "Denise Holloway",
+      "effective_date": "2024-06-01",
+      "expiry_date": "2025-06-01"
+    },
+    {
+      "policy_number": "TJ2-9001",
+      "holder_name": "Samuel Okonkwo",
+      "effective_date": "2026-01-10",
+      "expiry_date": "2027-01-10"
+    }
+  ]
+}
