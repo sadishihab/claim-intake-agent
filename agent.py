@@ -14,6 +14,7 @@ import websockets
 from dotenv import load_dotenv
 
 from audio import Speaker, list_devices, mic_chunks, resolve_device
+from intake import ClaimRecord
 
 URL = "wss://agents.assemblyai.com/v1/ws"
 EVENT_LOG = "events.jsonl"
@@ -53,9 +54,21 @@ SESSION = {
         "You are a claims intake assistant on a voice call. Collect these six "
         "fields, in this order: policy number, claimant name, date of loss, "
         "callback phone, loss type, and a description of what happened. Ask for "
-        "one at a time and keep every reply to one or two short sentences. Call "
-        "record_field the moment the caller gives you a value, before you "
-        "acknowledge it or move on to the next field."),
+        "one at a time and keep every reply to one or two short sentences.\n\n"
+        "Call record_field the moment the caller gives you a value, before you "
+        "acknowledge it. Every call comes back with a status, a reason, and a "
+        "readback. Act on the status:\n"
+        "- accepted: go straight on to the next field. Do not read the value "
+        "back and do not confirm it.\n"
+        "- unconfirmed: say the readback word for word, then wait for the caller "
+        "to confirm or correct it before moving on.\n"
+        "- rejected: say the readback word for word. It already explains the "
+        "problem and asks again. Then wait for a new answer.\n\n"
+        "The readback is authoritative and is the only thing you may say about a "
+        "value. Speak it verbatim: never paraphrase it, never re-spell a value "
+        "your own way, never invent a readback of your own, and never read a "
+        "value back that was accepted. The reason field is for your understanding "
+        "only — never say it aloud."),
     "greeting": "Hi, I can help you start a claim. Can I take your policy number?",
     "tools": TOOLS,
     "input": {"format": {"encoding": "audio/pcm"}},
@@ -109,7 +122,7 @@ async def send_mic(ws, ready, device):
             await ws.send(json.dumps({"type": "input.audio", "audio": payload}))
 
 
-async def receive(ws, speaker, ready, tools):
+async def receive(ws, speaker, ready, tools, claim):
     """Log every inbound event, then act on the ones we care about."""
     async for raw in ws:
         event = json.loads(raw)
@@ -129,8 +142,12 @@ async def receive(ws, speaker, ready, tools):
             print(f"agent: {event.get('text', '')}")
         elif etype == "tool.call":
             args = event.get("arguments") or {}  # already a dict, use as-is
-            print(f'TOOL {args.get("field")} = "{args.get("value")}"')
-            tools.add(event["call_id"], {"status": "accepted"})  # validators land here
+            field, value = args.get("field"), args.get("value")
+            verdict = claim.record(field, value)
+            print(f'TOOL {field} = "{value}" -> {verdict.status}')
+            tools.add(event["call_id"], {"status": verdict.status,
+                                         "reason": verdict.reason,
+                                         "readback": verdict.readback})
             await tools.flush(ws)
         elif etype in ("reply.started", "input.speech.started"):
             tools.note(etype)  # a turn is in flight, hold any results
@@ -151,7 +168,7 @@ async def main():
     print("audio devices:")
     in_dev = resolve_device(os.environ.get("INPUT_DEVICE"), "input")
     out_dev = resolve_device(os.environ.get("OUTPUT_DEVICE"), "output")
-    speaker, tools = Speaker(out_dev), ToolQueue()
+    speaker, tools, claim = Speaker(out_dev), ToolQueue(), ClaimRecord()
     ready, hangup = asyncio.Event(), asyncio.Event()
     # Ctrl+C sets an event; asyncio.run's own SIGINT cancels main, skipping cleanup.
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, hangup.set)
@@ -160,7 +177,7 @@ async def main():
     async with websockets.connect(URL, additional_headers=headers) as ws:
         await ws.send(json.dumps({"type": "session.update", "session": SESSION}))
         mic = asyncio.create_task(send_mic(ws, ready, in_dev))
-        rx = asyncio.create_task(receive(ws, speaker, ready, tools))
+        rx = asyncio.create_task(receive(ws, speaker, ready, tools, claim))
         await asyncio.wait([rx, asyncio.create_task(hangup.wait())],
                            return_when=asyncio.FIRST_COMPLETED)
         mic.cancel()

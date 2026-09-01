@@ -197,6 +197,29 @@ def test_loss_type_unconfirmed_when_ambiguous():
     assert "?" in v.readback
 
 
+@pytest.mark.parametrize("spoken", [
+    "someone hit me", "someone hit my car", "a car hit me at the junction",
+    "they rear ended me", "someone backed into me in the car park",
+    "I got sideswiped on the motorway", "someone hit my vehicle",
+])
+def test_collision_covers_how_people_actually_say_it(spoken):
+    """Plain phrasings a caller uses; none of these matched before."""
+    v = validate_loss_type(spoken)
+    assert v.status == ACCEPTED and v.value is LossType.COLLISION
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("someone hit my window with a rock", {LossType.COLLISION, LossType.GLASS}),
+    ("someone hit my car on purpose", {LossType.COLLISION, LossType.VANDALISM}),
+    ("a car crashed into my house and it caught fire", {LossType.COLLISION, LossType.FIRE}),
+])
+def test_widened_collision_asks_instead_of_guessing(spoken, expected):
+    """Broader collision terms overlap other categories. Overlap must ask:
+    'hit my car on purpose' is a deliberate act, not a road accident."""
+    v = validate_loss_type(spoken)
+    assert v.status == UNCONFIRMED and set(v.value) == expected
+
+
 @pytest.mark.parametrize("spoken", ["I want to change my address", "", "hello there"])
 def test_loss_type_rejected_when_nothing_matches(spoken):
     assert validate_loss_type(spoken).status == REJECTED

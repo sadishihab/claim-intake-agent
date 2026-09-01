@@ -60,7 +60,9 @@ class LossType(str, Enum):
 # Ordered so the readback lists candidates deterministically.
 LOSS_KEYWORDS: dict[LossType, tuple[str, ...]] = {
     LossType.COLLISION: ("collision", "crash", "crashed", "rear-end", "rear ended",
-                         "fender bender", "hit another", "ran into", "backed into"),
+                         "fender bender", "hit another", "hit me", "hit my car",
+                         "someone hit", "ran into", "backed into", "sideswipe",
+                         "side swipe"),
     LossType.THEFT: ("theft", "stolen", "stole", "robbed", "took my", "burglar"),
     LossType.FIRE: ("fire", "burned", "burnt", "flames", "smoke"),
     LossType.WATER: ("flood", "flooded", "water damage", "leak", "burst pipe"),
