@@ -1,17 +1,21 @@
 """Minimal terminal voice agent on AssemblyAI's Voice Agent API — raw WebSocket,
 no SDK. Every inbound event lands in events.jsonl. Ctrl+C hangs up cleanly.
 Run with --list-devices to see audio devices and the .env lines that pin them.
+
+This file is the protocol: session config, event dispatch, tool calls.
+Microphone, speaker, and device selection live in audio.py.
 """
 
-import asyncio, base64, json, os, queue, signal, sys, threading
+import asyncio, base64, json, os, signal, sys
+from contextlib import aclosing
 from datetime import datetime, timezone
 
-import numpy as np, sounddevice as sd, websockets
+import websockets
 from dotenv import load_dotenv
 
+from audio import Speaker, list_devices, mic_chunks, resolve_device
+
 URL = "wss://agents.assemblyai.com/v1/ws"
-RATE = 24000  # PCM16 mono 24 kHz, both directions (the audio/pcm default)
-BLOCK = 1200  # 50 ms of frames at 24 kHz — the chunk size the docs recommend
 EVENT_LOG = "events.jsonl"
 
 FIELDS = ["policy_number", "claimant_name", "date_of_loss",
@@ -66,88 +70,6 @@ def log_event(event):
         f.write(json.dumps(stamped) + "\n")
 
 
-# --- audio devices -------------------------------------------------------
-
-def suggested_pin(kind):
-    """A stable named node, preferred over ALSA 'default' (a PipeWire alias)."""
-    for d in sd.query_devices():
-        if d[f"max_{kind}_channels"] > 0 and d["name"].startswith(f"alsa_{kind}."):
-            return d["name"]
-    return None
-
-
-def list_devices():
-    print(sd.query_devices())
-    print("\nPin these in .env so PipeWire cannot re-select between runs:")
-    for kind in ("input", "output"):
-        if pin := suggested_pin(kind):
-            print(f"  {kind.upper()}_DEVICE={pin}")
-
-
-def resolve_device(spec, kind):
-    """Resolve an index, a name substring, or the default — once, at startup.
-
-    Monitor sources are never matched for input: they are a loopback of what is
-    playing, so the agent would transcribe its own voice.
-    """
-    devices = sd.query_devices()
-    if not spec:
-        idx = sd.query_devices(kind=kind)["index"]
-        print(f"  {kind:<6} [{idx}] {devices[idx]['name']}  <- unpinned, see --list-devices")
-        return idx
-    if spec.strip().isdigit():
-        idx = int(spec)
-    else:
-        hits = [i for i, d in enumerate(devices)
-                if spec.lower() in d["name"].lower()
-                and d[f"max_{kind}_channels"] > 0
-                and not (kind == "input" and d["name"].endswith(".monitor"))]
-        if not hits:
-            sys.exit(f"No {kind} device matches {spec!r}. Try --list-devices.")
-        idx = hits[0]
-    print(f"  {kind:<6} [{idx}] {devices[idx]['name']}")
-    return idx
-
-
-class Speaker:
-    """Drains reply.audio chunks to the sound card on a dedicated thread.
-
-    stream.write() blocks until the card has buffer room, so it stays off the
-    event loop. Chunks go straight out; the hardware clock paces, never a sleep.
-    """
-
-    def __init__(self, device):
-        self.q = queue.Queue()
-        self.stream = sd.OutputStream(samplerate=RATE, channels=1, dtype="int16",
-                                      device=device)
-        self.stream.start()
-        threading.Thread(target=self._drain, daemon=True).start()
-
-    def _drain(self):
-        while True:
-            pcm = self.q.get()
-            if pcm is None:
-                return
-            self.stream.write(pcm)
-
-    def play(self, b64):
-        self.q.put(np.frombuffer(base64.b64decode(b64), dtype=np.int16))
-
-    def flush(self):
-        """Drop queued speech after a barge-in so stale audio isn't heard."""
-        while not self.q.empty():
-            try:
-                self.q.get_nowait()
-            except queue.Empty:
-                break
-        self.stream.abort()
-        self.stream.start()
-
-    def close(self):
-        self.q.put(None)
-        self.stream.close()
-
-
 class ToolQueue:
     """Holds tool results until reply.done is the newest event received.
 
@@ -179,18 +101,11 @@ class ToolQueue:
 
 
 async def send_mic(ws, ready, device):
-    """Stream the mic as input.audio events, but only after session.ready."""
+    """Frame mic chunks as input.audio events, but only after session.ready."""
     await ready.wait()
-    loop, chunks = asyncio.get_running_loop(), asyncio.Queue()
-
-    def on_audio(indata, frames, time_info, status):
-        loop.call_soon_threadsafe(chunks.put_nowait, bytes(indata))
-
-    with sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16",
-                           blocksize=BLOCK, device=device, callback=on_audio):
-        print("mic live — speak, Ctrl+C to hang up\n")
-        while True:
-            payload = base64.b64encode(await chunks.get()).decode()
+    async with aclosing(mic_chunks(device)) as chunks:
+        async for chunk in chunks:
+            payload = base64.b64encode(chunk).decode()
             await ws.send(json.dumps({"type": "input.audio", "audio": payload}))
 
 
@@ -204,7 +119,7 @@ async def receive(ws, speaker, ready, tools):
             print(f"session ready ({event.get('session_id')})")
             ready.set()
         elif etype == "reply.audio":
-            speaker.play(event["data"])  # output field is "data", not "audio"
+            speaker.play(base64.b64decode(event["data"]))  # field is "data", not "audio"
         elif etype == "transcript.user.delta":
             # Each delta is the full text so far — overwrite, don't append.
             print(f"\r  you: {event.get('text', '')}", end="", flush=True)
