@@ -25,6 +25,11 @@ from validators import (ACCEPTED, REJECTED, UNCONFIRMED, Verdict, load_policies,
 
 NEEDS_POLICY = ("claimant_name", "date_of_loss")
 
+# Fields where an exact match is not on its own evidence of correctness, so the
+# caller has to hear the value back and agree before it is written. See the
+# recognizer/answer-key note in CLAUDE.md.
+CONFIRM_FIELDS = ("policy_number",)
+
 # Said on the second rejection of a policy number. Repeating the format a third
 # time is what the agent did on a live call while the caller read "M-A-C-K-K-K-D";
 # the phonetic alphabet is the direction the readback already speaks fluently.
@@ -73,8 +78,14 @@ class ClaimRecord:
 
     # --- validation ------------------------------------------------------
 
-    def record(self, field, value):
-        verdict = self._resent_unconfirmed(field, value) or self._validate(field, value)
+    def record(self, field, value, confirmed=False):
+        # A confirming resubmission is the one case where repeating a value is
+        # the right thing to do, so it skips the retry guard.
+        verdict = None
+        if not (confirmed and field in CONFIRM_FIELDS):
+            verdict = self._resent_unconfirmed(field, value)
+        verdict = verdict or self._validate(field, value)
+        verdict = self._needs_confirmation(field, value, verdict, confirmed)
         verdict = self._escalate(field, verdict)
         self.attempts.append({
             "at_seconds": self.elapsed(),
@@ -121,6 +132,30 @@ class ClaimRecord:
             f"{field} was already sent as {value!r} and came back unconfirmed; "
             "ask the caller to choose and send their answer, not this value again",
             asked["readback"])
+
+    def _needs_confirmation(self, field, value, verdict, confirmed):
+        """Hold an otherwise-accepted value until the caller agrees to it.
+
+        An exact match against policies.json used to be strong evidence, because
+        the recognizer knew nothing about the policy list. That stopped being
+        true the moment transcription was biased toward the list, and a caller
+        saying "C411" was handed a real policy. The readback is independent
+        evidence in a way the match itself no longer is.
+
+        `confirmed` only counts against a value we actually read back, otherwise
+        the model could set the flag on the first call and skip the whole thing.
+        """
+        if field not in CONFIRM_FIELDS or verdict.status != ACCEPTED:
+            return verdict
+        said = (value or "").strip().casefold()
+        read_back = any(a["field"] == field and a["status"] == UNCONFIRMED
+                        and (a["value"] or "").strip().casefold() == said
+                        for a in self.attempts)
+        if confirmed and read_back:
+            return verdict
+        return replace(verdict, status=UNCONFIRMED,
+                       reason=verdict.reason + "; unconfirmed until the caller "
+                              "agrees to the readback")
 
     def _escalate(self, field, verdict):
         """Change tack on a second rejection instead of repeating a sentence the

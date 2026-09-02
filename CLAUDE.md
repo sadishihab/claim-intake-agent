@@ -23,3 +23,24 @@ Explain what you are doing before you do it — I am learning this stack.
   Verified against the AsyncAPI schema and the live API.
 - The assemblyai-docs MCP is deprecated. Replacement at
   https://www.assemblyai.com/docs/mcp
+
+## Recognizer independence (learned the hard way)
+Never bias the recognizer toward the answer key when the recognizer's output
+is the evidence being validated.
+
+We set `input.keyterms` to the policy numbers in policies.json. Transcription
+accuracy improved on clean speech, and on a real call a caller saying "C411"
+got back "KD4-1188" — a real policy, which then passed exact-match validation.
+Three calls, three snaps onto the same policy. The partial transcripts show it
+happening: "...is C411." then "...is KD4-1188."
+
+Exact match against policies.json was only ever evidence because the
+recognizer knew nothing about policies.json. keyterms wired the answer key
+into the recognizer and the match stopped meaning anything, while every
+downstream guard still passed. A wrong value that arrives already valid is
+invisible to a validator.
+
+So: no keyterms for policy numbers, and policy_number is never accepted on a
+match alone — the caller has to hear the NATO readback and agree, via
+`confirmed` on record_field, which ClaimRecord enforces (a `confirmed` that
+was never read back does not count).

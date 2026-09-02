@@ -11,6 +11,13 @@ POLICIES = load_policies()
 TODAY = date(2026, 9, 2)
 
 
+def accept_policy(claim, value):
+    """Two calls now: a policy number is held until the caller agrees to the
+    readback, so every test that needs a resolved policy goes through here."""
+    claim.record("policy_number", value)
+    return claim.record("policy_number", value, confirmed=True)
+
+
 @pytest.fixture
 def claim(tmp_path):
     """tmp_path matters: any test that calls start() writes a log."""
@@ -18,7 +25,7 @@ def claim(tmp_path):
 
 
 def test_accepted_policy_resolves_the_record_and_is_stored(claim):
-    v = claim.record("policy_number", "bx7 4402")
+    v = accept_policy(claim, "bx7 4402")
     assert v.status == ACCEPTED
     assert claim.fields["policy_number"] == "BX7-4402"
     assert claim.policy["holder_name"] == "Marcus Halloway"
@@ -30,7 +37,7 @@ def test_rejected_value_is_never_written(claim):
 
 
 def test_unconfirmed_value_is_never_written(claim):
-    claim.record("policy_number", "BX7-4402")
+    accept_policy(claim, "BX7-4402")
     v = claim.record("claimant_name", "Marcus Holloway")   # one letter off
     assert v.status == UNCONFIRMED
     assert "claimant_name" not in claim.fields
@@ -49,17 +56,17 @@ def test_date_before_policy_is_rejected(claim):
 
 def test_date_is_checked_against_the_resolved_policy(claim):
     """2026-06-01 is inside BX7-4420's cover but outside BX7-4402's."""
-    claim.record("policy_number", "BX7-4420")
+    accept_policy(claim, "BX7-4420")
     assert claim.record("date_of_loss", "2026-06-01").status == ACCEPTED
 
     other = ClaimRecord(POLICIES, today=TODAY, directory=claim.directory)
-    other.record("policy_number", "BX7-4402")
+    accept_policy(other, "BX7-4402")
     assert other.record("date_of_loss", "2026-06-01").status == REJECTED
 
 
 def test_a_year_less_date_is_not_recorded(claim):
     """End of the chain: nothing lands in the record without a real year."""
-    claim.record("policy_number", "BX7-4420")
+    accept_policy(claim, "BX7-4420")
     assert claim.record("date_of_loss", "1st June").status == REJECTED
     assert "date_of_loss" not in claim.fields
 
@@ -140,6 +147,59 @@ def test_the_repeat_is_visible_in_the_call_record(claim):
     assert statuses == [UNCONFIRMED, REJECTED]
 
 
+# --- confirmation, because a match is not evidence -----------------------
+
+def test_a_matching_policy_number_is_held_until_the_caller_agrees(claim):
+    """The live failure: "C411" was transcribed as a real policy and accepted
+    on the match alone. A match no longer promotes anything by itself."""
+    v = claim.record("policy_number", "KD4-1188")
+    assert v.status == UNCONFIRMED
+    assert "Kilo Delta four" in v.readback and v.readback.endswith("correct?")
+    assert "policy_number" not in claim.fields
+
+
+def test_the_caller_agreeing_promotes_it(claim):
+    claim.record("policy_number", "KD4-1188")
+    v = claim.record("policy_number", "KD4-1188", confirmed=True)
+    assert v.status == ACCEPTED
+    assert claim.fields["policy_number"] == "KD4-1188"
+
+
+def test_confirmed_is_ignored_when_nothing_was_read_back(claim):
+    """Otherwise the model could set the flag on the first call and skip the
+    readback entirely, which is the whole protection."""
+    v = claim.record("policy_number", "KD4-1188", confirmed=True)
+    assert v.status == UNCONFIRMED and claim.fields == {}
+
+
+def test_confirmed_is_bound_to_the_value_that_was_read_back(claim):
+    """Agreeing to one policy number must not confirm a different one."""
+    claim.record("policy_number", "KD4-1188")            # read back
+    v = claim.record("policy_number", "BX7-4402", confirmed=True)
+    assert v.status == UNCONFIRMED and claim.fields == {}
+
+
+def test_the_retry_guard_does_not_block_the_confirmation(claim):
+    """Resending a value is normally a loop; this is the one case where it is
+    exactly right."""
+    claim.record("policy_number", "KD4-1188")
+    v = claim.record("policy_number", "KD4-1188", confirmed=True)
+    assert v.status == ACCEPTED
+    assert "already sent" not in v.reason
+
+
+def test_a_rejected_number_is_still_rejected_not_held(claim):
+    assert claim.record("policy_number", "ZZ9-0000").status == REJECTED
+
+
+def test_other_fields_are_unaffected_by_confirmation(claim):
+    """Only policy_number carries this cost; the rest accept as before."""
+    accept_policy(claim, "BX7-4420")
+    assert claim.record("callback_phone", "555-123-4567").status == ACCEPTED
+    assert claim.record("claimant_name", "Priya Raghunathan").status == ACCEPTED
+    assert claim.record("description", "anything").status == ACCEPTED
+
+
 # --- changing tack after a rejection -------------------------------------
 
 def test_the_second_policy_rejection_asks_for_nato(claim):
@@ -159,13 +219,15 @@ def test_the_escalation_persists_and_then_the_nato_answer_lands(claim):
     claim.record("policy_number", "3841188")
     claim.record("policy_number", "D411")
     assert "Bravo for B" in claim.record("policy_number", "D42").readback
-    ok = claim.record("policy_number", "Bravo X-ray seven four four zero two")
+    nato = "Bravo X-ray seven four four zero two"
+    assert claim.record("policy_number", nato).status == UNCONFIRMED
+    ok = claim.record("policy_number", nato, confirmed=True)
     assert ok.status == ACCEPTED and claim.fields["policy_number"] == "BX7-4402"
 
 
 def test_escalation_is_scoped_to_policy_numbers(claim):
     """Other fields have their own recovery wording; NATO is for letters."""
-    claim.record("policy_number", "BX7-4420")
+    accept_policy(claim, "BX7-4420")
     claim.record("callback_phone", "nonsense")
     second = claim.record("callback_phone", "also nonsense")
     assert second.status == REJECTED and "Bravo for B" not in second.readback
@@ -177,8 +239,9 @@ def test_unknown_field_is_rejected_not_crashed(claim):
 
 
 def test_full_happy_path_collects_all_six(claim):
+    assert accept_policy(claim, "BX7-4420").status == ACCEPTED
     for field, value in [
-        ("policy_number", "BX7-4420"), ("claimant_name", "Priya Raghunathan"),
+        ("claimant_name", "Priya Raghunathan"),
         ("date_of_loss", "2026-06-01"), ("callback_phone", "555-123-4567"),
         ("loss_type", "a pipe burst and flooded the kitchen"),
         ("description", "water everywhere"),

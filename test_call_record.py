@@ -51,13 +51,16 @@ def sinks():
     return on_audio, on_event, audio, events
 
 
-def turn(call_id, field, value, said, item, status="completed"):
+def turn(call_id, field, value, said, item, status="completed", confirmed=False):
     """One caller utterance -> one record_field call -> end of reply."""
+    args = {"field": field, "value": value}
+    if confirmed:
+        args["confirmed"] = True
     return [
         {"type": "transcript.user", "item_id": item, "text": said},
         {"type": "reply.started", "reply_id": f"r_{call_id}"},
         {"type": "tool.call", "call_id": call_id, "name": "record_field",
-         "arguments": {"field": field, "value": value}},
+         "arguments": args},
         {"type": "reply.done", "reply_id": f"r_{call_id}", "status": status},
     ]
 
@@ -69,6 +72,8 @@ SCRIPT = (
     + turn("c1", "policy_number", "BX7-440", "my policy is B X 7 4 4 0", "item_1")
     + turn("c2", "policy_number", "ZZ9-0000", "sorry, zulu zulu nine zero zero zero zero", "item_2")
     + turn("c3", "policy_number", "BX7-4402", "it's bravo x-ray seven four four zero two", "item_3")
+    # a match is held until the caller agrees to the readback
+    + turn("c3b", "policy_number", "BX7-4402", "yes, that's the one", "item_3b", confirmed=True)
     + turn("c4", "claimant_name", "Marcus Holloway", "Marcus Holloway", "item_4")
     + turn("c5", "claimant_name", "Marcus Halloway", "H A L L O W A Y, Halloway", "item_5")
     + turn("c6", "loss_type", "someone hit me at the lights", "someone hit me at the lights", "item_6")
@@ -101,7 +106,7 @@ def test_record_is_written_under_the_session_id(call):
 def test_every_attempt_is_kept_not_just_accepted_ones(call):
     _, _, record, _ = call
     assert [a["field"] for a in record["attempts"]] == [
-        "policy_number", "policy_number", "policy_number",
+        "policy_number", "policy_number", "policy_number", "policy_number",
         "claimant_name", "claimant_name", "loss_type"]
 
 
@@ -109,8 +114,8 @@ def test_reviewer_can_see_policy_number_failed_twice_first(call):
     """The whole point: two rejections are visible, with what was said."""
     _, _, record, _ = call
     tries = [a for a in record["attempts"] if a["field"] == "policy_number"]
-    assert [a["status"] for a in tries] == [REJECTED, REJECTED, ACCEPTED]
-    assert [a["value"] for a in tries] == ["BX7-440", "ZZ9-0000", "BX7-4402"]
+    assert [a["status"] for a in tries] == [REJECTED, REJECTED, UNCONFIRMED, ACCEPTED]
+    assert [a["value"] for a in tries] == ["BX7-440", "ZZ9-0000", "BX7-4402", "BX7-4402"]
     assert "not a policy number format" in tries[0]["reason"]
     assert "not on file" in tries[1]["reason"]
 
@@ -120,7 +125,8 @@ def test_each_attempt_links_to_what_the_caller_said(call):
     heard = [(a["heard"]["item_id"], a["heard"]["text"]) for a in record["attempts"]]
     assert heard[0] == ("item_1", "my policy is B X 7 4 4 0")
     assert heard[2] == ("item_3", "it's bravo x-ray seven four four zero two")
-    assert heard[4] == ("item_5", "H A L L O W A Y, Halloway")
+    assert heard[3] == ("item_3b", "yes, that's the one")
+    assert heard[5] == ("item_5", "H A L L O W A Y, Halloway")
 
 
 def test_unconfirmed_is_recorded_but_not_accepted(call):
@@ -158,9 +164,9 @@ def test_readback_is_carried_verbatim_into_the_record(call):
 def test_a_tool_result_went_back_for_every_call(call):
     _, ws, record, _ = call
     results = ws.tool_results()
-    assert [r["call_id"] for r in results] == ["c1", "c2", "c3", "c4", "c5", "c6"]
+    assert [r["call_id"] for r in results] == ["c1", "c2", "c3", "c3b", "c4", "c5", "c6"]
     assert [json.loads(r["result"])["status"] for r in results] == [
-        REJECTED, REJECTED, ACCEPTED, UNCONFIRMED, ACCEPTED, ACCEPTED]
+        REJECTED, REJECTED, UNCONFIRMED, ACCEPTED, UNCONFIRMED, ACCEPTED, ACCEPTED]
 
 
 def test_nothing_is_written_when_the_session_never_started(tmp_path):
@@ -184,7 +190,7 @@ def test_the_log_is_appended_as_the_call_happens(call):
     entries = lines(claim)
     assert entries[0]["type"] == "session.start"
     assert entries[0]["session_id"] == "sess_test123"
-    assert [e["type"] for e in entries[1:]] == ["attempt"] * 6
+    assert [e["type"] for e in entries[1:]] == ["attempt"] * 7
     assert [e["field"] for e in entries[1:]] == [a["field"] for a in record["attempts"]]
 
 
@@ -200,7 +206,7 @@ def test_a_crash_before_shutdown_still_leaves_the_evidence(tmp_path, monkeypatch
 
     entries = lines(claim)
     tries = [e for e in entries if e.get("field") == "policy_number"]
-    assert [e["status"] for e in tries] == [REJECTED, REJECTED, ACCEPTED]
+    assert [e["status"] for e in tries] == [REJECTED, REJECTED, UNCONFIRMED, ACCEPTED]
     assert tries[0]["heard"]["text"] == "my policy is B X 7 4 4 0"
 
 
@@ -220,7 +226,7 @@ def test_a_truncated_last_line_does_not_lose_the_rest(tmp_path, monkeypatch):
             good.append(json.loads(line))
         except json.JSONDecodeError:
             bad += 1
-    assert bad == 1 and len(good) == 6              # header + 5 of 6 attempts
+    assert bad == 1 and len(good) == 7              # header + 6 of 7 attempts
 
 
 # --- the shared seam both clients hang off ------------------------------
@@ -243,5 +249,6 @@ def test_every_client_facing_event_reaches_the_sink(tmp_path, monkeypatch):
     assert kinds == ["ready", "user_final", "tool", "interrupted", "error", "ended"]
     assert audio == [b"\x00\x01\x00\x01"]          # decoded, not base64
     tool = dict(events)["tool"]
-    assert tool["field"] == "policy_number" and tool["status"] == "accepted"
+    assert tool["field"] == "policy_number"
+    assert tool["status"] == "unconfirmed"       # held pending the readback
     assert tool["readback"].startswith("That's Bravo X-ray seven")

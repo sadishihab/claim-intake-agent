@@ -16,8 +16,6 @@ from datetime import datetime, timezone
 import websockets
 from dotenv import load_dotenv
 
-from validators import load_policies
-
 load_dotenv()
 API_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 if not API_KEY:
@@ -34,13 +32,9 @@ API_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 if not API_KEY:
     sys.exit("ASSEMBLYAI_API_KEY missing — put it in .env")
 
-# Bias transcription toward the policy-number shape. Measured against baseline,
-# transcription_prompt and max_accuracy: only this one moved anything. A spelled
-# TJ2-9002 comes back as "TJ too." without it and "TJ2-9002." with it -- and that
-# number is not on the list, so the bias is toward the pattern, not the strings.
-# The documented ceiling is 100 terms.
-KEYTERMS = [p["policy_number"] for p in load_policies()][:100]
-
+# No input.keyterms here on purpose. Biasing the recognizer toward the policy
+# numbers made it rewrite mis-heard input onto a real policy -- "C411" came back
+# as "KD4-1188" and validated. See CLAUDE.md.
 TOOLS = [{
     "type": "function",
     "name": "record_field",
@@ -56,6 +50,10 @@ TOOLS = [{
             "value": {"type": "string",
                       "description": "The value exactly as you understood it, "
                                      "verbatim, with no cleanup or reformatting."},
+            "confirmed": {"type": "boolean",
+                          "description": "True only when you have just read this "
+                                         "exact value back to the caller and they "
+                                         "agreed it is right. False otherwise."},
         },
         "required": ["field", "value"],
     },
@@ -85,9 +83,16 @@ SESSION = {
         "if they pick vandalism, call record_field with \"vandalism\", not the "
         "words they used the first time. If the caller says something that does "
         "not answer the question, ask the question again — do not record what "
-        "they just said and do not resend the old value. Never call record_field "
-        "twice with the same value for the same field: a value that came back "
-        "unconfirmed will never become accepted by sending it again.\n\n"
+        "they just said and do not resend the old value.\n\n"
+        "When a readback instead reads a value back and asks whether it is right, "
+        "and the caller says yes, call record_field again with exactly the same "
+        "value and confirmed set to true. That is the only time you may resend a "
+        "value, and the only time you may set confirmed. Never set confirmed true "
+        "from anything other than the caller agreeing to a readback you have just "
+        "spoken — not from your own certainty, and not to save a turn.\n\n"
+        "Otherwise never call record_field twice with the same value for the same "
+        "field: a value that came back unconfirmed will never become accepted by "
+        "sending it again.\n\n"
         "date_of_loss must be ISO-8601, YYYY-MM-DD, and you convert it before "
         "you call record_field: \"the first of June twenty twenty-five\" becomes "
         "\"2025-06-01\". If the caller gives a date with no year, ask them which "
@@ -101,7 +106,7 @@ SESSION = {
         "only — never say it aloud."),
     "greeting": "Hi, I can help you start a claim. Can I take your policy number?",
     "tools": TOOLS,
-    "input": {"format": {"encoding": "audio/pcm"}, "keyterms": KEYTERMS},
+    "input": {"format": {"encoding": "audio/pcm"}},
     "output": {"voice": "anna", "format": {"encoding": "audio/pcm"}},
 }
 
@@ -193,7 +198,7 @@ async def run_session(ws, claim, on_audio, on_event):
         elif etype == "tool.call":
             args = event.get("arguments") or {}  # already a dict, use as-is
             field, value = args.get("field"), args.get("value")
-            verdict = claim.record(field, value)
+            verdict = claim.record(field, value, bool(args.get("confirmed")))
             result = {"status": verdict.status, "reason": verdict.reason,
                       "readback": verdict.readback}
             await on_event("tool", {"field": field, "value": value, **result})

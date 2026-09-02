@@ -166,22 +166,29 @@ def test_the_worklet_resamples_and_batches():
 
 # --- transcription config ------------------------------------------------
 
-def test_keyterms_track_the_policy_database():
-    """Measured as the only lever that moved anything, so it is the only one
-    carried. Derived from policies.json rather than hardcoded, so adding a
-    policy biases transcription toward it automatically."""
-    import protocol
-    from validators import load_policies
-
-    expected = [p["policy_number"] for p in load_policies()]
-    assert protocol.SESSION["input"]["keyterms"] == expected
-    assert len(protocol.KEYTERMS) <= 100, "documented ceiling"
-
-
-def test_the_levers_that_did_nothing_are_not_carried():
-    """transcription_prompt and max_accuracy showed no measurable effect across
-    12 clips each; no reason to ship config that does nothing."""
+def test_keyterms_are_not_used():
+    """Biasing the recognizer toward policies.json made it rewrite mis-heard
+    input onto a real policy: "C411" came back "KD4-1188" and validated, three
+    calls running. Exact match is only evidence while the recognizer knows
+    nothing about the answer key."""
     import protocol
 
-    assert "transcription_prompt" not in protocol.SESSION["input"]
-    assert "transcription_mode" not in protocol.SESSION["input"]
+    assert "keyterms" not in protocol.SESSION["input"]
+    assert not hasattr(protocol, "KEYTERMS")
+
+
+def test_no_transcription_lever_is_carried():
+    """transcription_prompt and max_accuracy measured at zero effect; keyterms
+    measured actively harmful. None of them ship."""
+    import protocol
+
+    for lever in ("keyterms", "transcription_prompt", "transcription_mode"):
+        assert lever not in protocol.SESSION["input"]
+
+
+def test_record_field_exposes_the_confirmed_flag():
+    import protocol
+
+    props = protocol.TOOLS[0]["parameters"]["properties"]
+    assert props["confirmed"]["type"] == "boolean"
+    assert "confirmed" not in protocol.TOOLS[0]["parameters"]["required"]
