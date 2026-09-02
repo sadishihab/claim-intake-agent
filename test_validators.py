@@ -304,3 +304,22 @@ def test_every_verdict_has_a_readback_and_rejected_carries_no_value():
         assert v.readback.strip() and v.reason.strip()
         if v.status == REJECTED:
             assert v.value is None
+
+
+def test_accepted_readbacks_are_never_questions():
+    """An accepted readback is not spoken, so it must not be shaped like a
+    question. Three of them were, and the agent duly asked them: it read an
+    accepted phone number back and treated the caller's "Right." as a new
+    answer."""
+    from datetime import date as _date
+
+    accepted = [
+        validate_claimant_name("Priya Raghunathan", RAGHUNATHAN),
+        validate_date_of_loss("2026-06-01", RAGHUNATHAN, today=_date(2026, 9, 2)),
+        validate_callback_phone("555-123-4567"),
+        validate_loss_type("there was a fire"),
+        validate_description("anything"),
+    ]
+    for v in accepted:
+        assert v.status == ACCEPTED
+        assert not v.readback.rstrip().endswith("?"), v.readback

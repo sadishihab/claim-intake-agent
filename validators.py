@@ -190,7 +190,7 @@ def validate_date_of_loss(spoken: str, policy: dict, today: date | None = None) 
                        f"{spoken_date} falls outside this policy's cover, which ran "
                        f"from {start:%d %B %Y} to {end:%d %B %Y}.")
     return Verdict(ACCEPTED, loss.isoformat(), "within policy period",
-                   f"So that's {spoken_date}, correct?")
+                   f"Noted, {spoken_date}.")
 
 
 # --- callback phone ------------------------------------------------------
@@ -202,7 +202,7 @@ def validate_callback_phone(spoken: str) -> Verdict:
     if len(digits) == 10:
         grouped = ", ".join(_spell_digits(g) for g in (digits[:3], digits[3:6], digits[6:]))
         return Verdict(ACCEPTED, digits, "10-digit number",
-                       f"Let me read that back: {grouped}. Is that right?")
+                       f"Noted, {grouped}.")
     if len(digits) == 7:
         return Verdict(UNCONFIRMED, digits, "7 digits, area code missing",
                        f"I got {_spell_digits(digits)}, but I need the area code too.")
@@ -217,7 +217,7 @@ def validate_loss_type(spoken: str) -> Verdict:
     hits = [lt for lt, words in LOSS_KEYWORDS.items() if any(w in text for w in words)]
     if len(hits) == 1:
         return Verdict(ACCEPTED, hits[0], f"matched {hits[0].value}",
-                       f"Logging this as {hits[0].value}. Correct?")
+                       f"Logging this as {hits[0].value}.")
     if len(hits) > 1:
         options = " or ".join(h.value for h in hits)
         return Verdict(UNCONFIRMED, hits, f"ambiguous between {options}",

@@ -147,6 +147,62 @@ def test_the_repeat_is_visible_in_the_call_record(claim):
     assert statuses == [UNCONFIRMED, REJECTED]
 
 
+# --- an accepted field is not overwritten ---------------------------------
+
+def test_repeating_the_same_answer_changes_nothing(claim):
+    """A deployed call recorded callback_phone three times for one answer, the
+    last when the caller only said "Right."."""
+    assert claim.record("callback_phone", "555-123-4567").status == ACCEPTED
+    assert claim.record("callback_phone", "555-123-4567").status == ACCEPTED
+    assert claim.fields["callback_phone"] == "5551234567"
+
+
+def test_a_different_answer_does_not_overwrite_silently(claim):
+    """This is the one that matters: a stray utterance became a phone number
+    because nothing stopped a later value replacing an earlier one."""
+    claim.record("callback_phone", "555-123-4567")
+    v = claim.record("callback_phone", "555-999-0000")
+    assert v.status == UNCONFIRMED
+    assert claim.fields["callback_phone"] == "5551234567"      # kept
+    assert "already have" in v.readback
+
+
+def test_a_deliberate_correction_still_lands(claim):
+    """Immutable by accident, changeable on purpose."""
+    claim.record("callback_phone", "555-123-4567")
+    claim.record("callback_phone", "555-999-0000")
+    v = claim.record("callback_phone", "555-999-0000", confirmed=True)
+    assert v.status == ACCEPTED and claim.fields["callback_phone"] == "5559990000"
+
+
+def test_every_field_is_protected_not_just_the_phone(claim):
+    accept_policy(claim, "BX7-4420")
+    claim.record("date_of_loss", "2026-06-01")
+    assert claim.record("date_of_loss", "2026-01-05").status == UNCONFIRMED
+    assert claim.fields["date_of_loss"] == "2026-06-01"
+
+    # description takes any text, so two different answers are both valid and
+    # the guard is the only thing standing between them.
+    claim.record("description", "the back bumper is crushed")
+    assert claim.record("description", "it happened at work").status == UNCONFIRMED
+    assert claim.fields["description"] == "the back bumper is crushed"
+
+
+def test_confirming_does_not_unblock_an_ambiguous_choice(claim):
+    """confirmed answers "is this right?", not "which of these?". Resending an
+    ambiguous loss_type stays a loop even with the flag set."""
+    claim.record("loss_type", "someone smashed my window")
+    assert claim.record("loss_type", "someone smashed my window",
+                        confirmed=True).status == REJECTED
+    assert "loss_type" not in claim.fields
+
+
+def test_a_confirmed_policy_number_stops_asking(claim):
+    """Its readback must not stay a question, or it gets read back again."""
+    v = accept_policy(claim, "BX7-4420")
+    assert v.status == ACCEPTED and not v.readback.rstrip().endswith("?")
+
+
 # --- confirmation, because a match is not evidence -----------------------
 
 def test_a_matching_policy_number_is_held_until_the_caller_agrees(claim):

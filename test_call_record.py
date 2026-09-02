@@ -152,11 +152,14 @@ def test_final_accepted_values_only(call):
 
 
 def test_readback_is_carried_verbatim_into_the_record(call):
+    """The spoken readback is the unconfirmed one; the accepted attempt carries
+    a statement, because an accepted readback is never said out loud."""
     _, _, record, _ = call
-    accepted_policy = [a for a in record["attempts"]
-                       if a["field"] == "policy_number" and a["status"] == ACCEPTED][0]
-    assert accepted_policy["readback"] == \
-        "That's Bravo X-ray seven, four four zero two, correct?"
+    policy = [a for a in record["attempts"] if a["field"] == "policy_number"]
+    held = [a for a in policy if a["status"] == UNCONFIRMED][0]
+    accepted = [a for a in policy if a["status"] == ACCEPTED][0]
+    assert held["readback"] == "That's Bravo X-ray seven, four four zero two, correct?"
+    assert not accepted["readback"].rstrip().endswith("?")
 
 
 # --- the wire ------------------------------------------------------------

@@ -54,6 +54,9 @@ class ClaimRecord:
         self.fields = {}         # accepted values only — never a rejected one
         self.attempts = []       # every record_field call, in order
         self.heard = None        # most recent transcript.user
+        # (field, value) pairs we asked the caller to confirm. Resending one of
+        # these is the answer to a question, not a retry loop.
+        self._confirm_holds = set()
         self.session_id = None
         self.started_at = None   # wall clock, for the reader
         self._t0 = None          # monotonic, for durations
@@ -80,11 +83,14 @@ class ClaimRecord:
 
     def record(self, field, value, confirmed=False):
         # A confirming resubmission is the one case where repeating a value is
-        # the right thing to do, so it skips the retry guard.
+        # the right thing to do, so it skips the retry guard. Only a value we
+        # actually asked about counts: an unconfirmed that meant "choose one of
+        # these" is still a loop when the same words come back.
         verdict = None
-        if not (confirmed and field in CONFIRM_FIELDS):
+        if not (confirmed and self._hold_key(field, value) in self._confirm_holds):
             verdict = self._resent_unconfirmed(field, value)
         verdict = verdict or self._validate(field, value)
+        verdict = self._already_recorded(field, value, verdict, confirmed)
         verdict = self._needs_confirmation(field, value, verdict, confirmed)
         verdict = self._escalate(field, verdict)
         self.attempts.append({
@@ -133,6 +139,35 @@ class ClaimRecord:
             "ask the caller to choose and send their answer, not this value again",
             asked["readback"])
 
+    @staticmethod
+    def _hold_key(field, value):
+        return field, (value or "").strip().casefold()
+
+    def _already_recorded(self, field, value, verdict, confirmed):
+        """An accepted field is not overwritten by a later utterance.
+
+        A deployed call recorded callback_phone three times for one answer, the
+        last when the caller only said "Right." Nothing stopped a later value
+        replacing an earlier one, on any field, which is how a stray utterance
+        becomes a claimant's phone number.
+
+        The same answer again is idempotent. A different answer is held: two
+        conflicting values means guessing, so the caller is asked and the
+        correction only lands with confirmed=True.
+        """
+        if verdict.status != ACCEPTED or field not in self.fields:
+            return verdict
+        if _plain(verdict.value) == _plain(self.fields[field]):
+            return verdict                      # same answer, nothing changes
+        if confirmed:
+            return verdict                      # the caller corrected it on purpose
+        self._confirm_holds.add(self._hold_key(field, value))
+        return replace(verdict, status=UNCONFIRMED,
+                       reason=f"{field} is already recorded as "
+                              f"{_plain(self.fields[field])!r}; this is a different answer",
+                       readback="I already have an answer for that one. "
+                                "Did you want to change it?")
+
     def _needs_confirmation(self, field, value, verdict, confirmed):
         """Hold an otherwise-accepted value until the caller agrees to it.
 
@@ -152,7 +187,10 @@ class ClaimRecord:
                         and (a["value"] or "").strip().casefold() == said
                         for a in self.attempts)
         if confirmed and read_back:
-            return verdict
+            # Accepted readbacks are never spoken, so this must not stay a
+            # question the model is tempted to ask again.
+            return replace(verdict, readback="Thanks, I have that.")
+        self._confirm_holds.add(self._hold_key(field, value))
         return replace(verdict, status=UNCONFIRMED,
                        reason=verdict.reason + "; unconfirmed until the caller "
                               "agrees to the readback")
