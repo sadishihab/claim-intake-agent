@@ -1,5 +1,5 @@
 {
-  "note": "Every utterance below is verbatim from calls/ and events.jsonl. The naive column is the value the model extracted from the transcript. The validated column is computed by the real validators when this page loads, so it cannot drift away from the code.",
+  "note": "These six scenes come from five real calls plus one seeded demo record, all of them in calls/ and events.jsonl. Every utterance is verbatim, and the one that was seeded rather than spoken says so. The naive column is the value the model extracted from the transcript. The validated column is computed by the real validators when this page loads, so it cannot drift away from the code.",
   "scenes": [
     {
       "headline": true,
@@ -25,7 +25,7 @@
       "partials": ["bravo x-ray seven, four four two zero"],
       "transcript": "bravo x-ray seven, four four two zero",
       "naive": "BX7-4420",
-      "why": "BX7-4420 and BX7-4402 are both real policies belonging to different people. The readback separates them audibly. 'Four four two zero' against 'four four zero two'."
+      "why": "BX7-4420 and BX7-4402 are both real policies belonging to different people. The readback separates them audibly. 'Four four two zero' against 'four four zero two'. This is the one scene taken from a seeded demo record rather than a live call, so the utterance was written by seed_demo.py and never spoken. The two policy numbers are real."
     },
     {
       "field": "claimant_name",
@@ -38,7 +38,7 @@
     },
     {
       "field": "date_of_loss",
-      "policy": "BX7-4402",
+      "policy": "KD4-1188",
       "caller": "giving a date with no year",
       "partials": ["1st June."],
       "transcript": "1st June.",

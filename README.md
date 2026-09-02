@@ -8,9 +8,11 @@ transcripts will record wrong policy numbers, wrong names and wrong dates
 without ever noticing. Every value here gets checked against a policy database
 before it is recorded. When the check cannot settle it, the agent asks.
 
-See it in one screen. **`/compare`** renders one real call twice, side by side,
-showing what a system records if it trusts the transcript against what this one
-records. Every utterance on that page is verbatim from the call logs.
+See it in one screen. **`/compare`** takes six moments out of the call logs and
+renders each one twice, side by side, showing what a system records if it
+trusts the transcript against what this one records. Every utterance on that
+page is verbatim. Five come from real calls and one comes from a seeded demo
+record, which the page labels.
 
 ## Three verdicts
 

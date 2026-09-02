@@ -61,8 +61,8 @@
   .tally b { font-size: 27px; }
 </style>
 
-<h1>Same call. Same transcript. Two systems.</h1>
-<div class="sub">Left: record what the recogniser returned. Right: this system.</div>
+<h1>Same transcripts. Two systems.</h1>
+<div class="sub">On the left, a system that records what the recogniser returned. On the right, this one.</div>
 <div class="prov" id="prov"></div>
 <div id="scenes"></div>
 <div class="tally" id="tally"></div>
@@ -85,7 +85,7 @@ fetch("/api/comparison").then(r => r.json()).then(data => {
     return `
       <section class="scene${s.headline ? " headline" : ""}">
         <header>
-          <div class="tag">${s.headline ? "the one that matters" : esc(s.field)}</div>
+          <div class="tag">${s.headline ? "the exhibit" : esc(s.field)}</div>
           <div class="caller">Caller ${esc(s.caller)}</div>
         </header>
         <div class="heard">
@@ -94,13 +94,13 @@ fetch("/api/comparison").then(r => r.json()).then(data => {
         </div>
         <div class="cols">
           <div class="col">
-            <h3>Naive &mdash; trust the transcript</h3>
+            <h3>Naive (trusts the transcript)</h3>
             <span class="badge recorded">recorded</span>
             <div class="val mono">${esc(s.naive)}</div>
             <div class="says"><b>says to the caller</b>Nothing. It moves on.</div>
           </div>
           <div class="col">
-            <h3>Validated &mdash; this system</h3>
+            <h3>Validated (this system)</h3>
             <span class="badge ${esc(v.status)}">${esc(v.status)}</span>
             <div class="val mono${recorded ? "" : " none"}">${
               recorded ? esc(v.value) : "nothing recorded"}</div>
@@ -117,7 +117,10 @@ fetch("/api/comparison").then(r => r.json()).then(data => {
   const refused = data.scenes.filter(s => s.validated.status === "rejected").length;
   document.getElementById("tally").innerHTML =
     `The naive system recorded <b>${n} of ${n}</b> values and asked <b>0</b> questions. ` +
-    `Every one of them is wrong.<br>This system recorded <b>${kept}</b>, ` +
+    `It has no way to tell which of the ${n} it got right. The twin policy numbers ` +
+    `are the clearest case. BX7-4402 and BX7-4420 are both real and belong to ` +
+    `different people, so a transcript naming one looks exactly like a transcript ` +
+    `naming the other.<br>This system recorded <b>${kept}</b>, ` +
     `asked about <b>${asked}</b>, and refused <b>${refused}</b>.`;
 });
 </script>

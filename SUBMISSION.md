@@ -203,12 +203,14 @@ therefore weak evidence. Then I let one of those totals decide.
 ### What a reviewer sees
 
 `/compare` is the three-minute version, and it is public on the deployed
-instance. It renders one real call twice, side by side. What a system records
-if it trusts the transcript, against what this one records, over six scenes.
-The scenes are the manufactured policy match, a spelled-out number, the twin of
-another policy on file, a name one letter from the holder, a date with no year,
-and a loss that falls into two categories at once. Every utterance on the page
-is verbatim from `calls/` and `events.jsonl`, partials included. The naive
+instance. It takes six moments out of the call logs and renders each one twice,
+side by side. What a system records if it trusts the transcript, against what
+this one records. The scenes are the manufactured policy match, a spelled-out
+number, the twin of another policy on file, a name one letter from the holder,
+a date with no year, and a loss that falls into two categories at once. Every
+utterance on the page is verbatim, partials included. Five of the six come from
+real calls. The sixth comes from a seeded demo record, and the page says so on
+the scene itself. The naive
 column is the value the model actually extracted. The validated column is
 computed at request time by the real validators instead of written into the
 fixture, so the page cannot drift away from the code. Tests assert that no
