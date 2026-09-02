@@ -130,6 +130,7 @@ async def receive(ws, speaker, ready, tools, claim):
         etype = event.get("type")
         if etype == "session.ready":
             print(f"session ready ({event.get('session_id')})")
+            claim.start(event.get("session_id"))  # anchors every at_seconds
             ready.set()
         elif etype == "reply.audio":
             speaker.play(base64.b64decode(event["data"]))  # field is "data", not "audio"
@@ -138,6 +139,8 @@ async def receive(ws, speaker, ready, tools, claim):
             print(f"\r  you: {event.get('text', '')}", end="", flush=True)
         elif etype == "transcript.user":
             print(f"\r  you: {event.get('text', '')}")
+            # Attach this utterance to whatever field the agent records next.
+            claim.note_user_transcript(event.get("item_id"), event.get("text", ""))
         elif etype == "transcript.agent":
             print(f"agent: {event.get('text', '')}")
         elif etype == "tool.call":
@@ -190,6 +193,9 @@ async def main():
             pass
         rx.cancel()
         speaker.close()
+        if path := claim.write():
+            print(f"call record: {path} ({len(claim.attempts)} attempts, "
+                  f"{len(claim.fields)}/{len(FIELDS)} fields accepted)")
 
 
 if __name__ == "__main__":

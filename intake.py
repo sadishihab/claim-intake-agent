@@ -1,9 +1,17 @@
-"""Per-call claim state: turn one record_field tool call into a Verdict.
+"""Per-call claim state: turn one record_field tool call into a Verdict, and
+keep the evidence trail for the whole call.
 
 validators.py is stateless — one pure function per field. Two of those functions
 need the caller's policy record, which only exists once the policy number has
-been accepted. This module holds that state, plus the accepted values so far.
+been accepted. This module holds that state, the accepted values, and every
+attempt in order so a reviewer can see what was said before a field stuck.
 """
+
+import json
+import time
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
 
 from validators import (ACCEPTED, REJECTED, Verdict, load_policies,
                         validate_callback_phone, validate_claimant_name,
@@ -13,17 +21,55 @@ from validators import (ACCEPTED, REJECTED, Verdict, load_policies,
 NEEDS_POLICY = ("claimant_name", "date_of_loss")
 
 
+def _plain(value):
+    """LossType is a str Enum; store its value so the JSON reads 'collision'."""
+    return value.value if isinstance(value, Enum) else value
+
+
 class ClaimRecord:
-    """Accepted field values for one call, plus the policy they belong to."""
+    """Accepted field values for one call, the policy they belong to, and the
+    full attempt history including rejections."""
 
     def __init__(self, policies=None, today=None):
         self.policies = load_policies() if policies is None else policies
-        self.today = today   # pinned in tests; None means date.today()
-        self.policy = None   # resolved when policy_number is accepted
-        self.fields = {}     # accepted values only — never a rejected one
+        self.today = today       # pinned in tests; None means date.today()
+        self.policy = None       # resolved when policy_number is accepted
+        self.fields = {}         # accepted values only — never a rejected one
+        self.attempts = []       # every record_field call, in order
+        self.heard = None        # most recent transcript.user
+        self.session_id = None
+        self.started_at = None   # wall clock, for the reader
+        self._t0 = None          # monotonic, for durations
+
+    # --- fed by the protocol layer ---------------------------------------
+
+    def start(self, session_id):
+        self.session_id = session_id
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self._t0 = time.monotonic()
+
+    def note_user_transcript(self, item_id, text):
+        """Latest final caller utterance, attached to whatever they say next."""
+        self.heard = {"item_id": item_id, "text": text}
+
+    def elapsed(self):
+        """Seconds since session.ready. Monotonic, so a clock step can't make
+        this go backwards mid-call."""
+        return 0.0 if self._t0 is None else round(time.monotonic() - self._t0, 3)
+
+    # --- validation ------------------------------------------------------
 
     def record(self, field, value):
         verdict = self._validate(field, value)
+        self.attempts.append({
+            "at_seconds": self.elapsed(),
+            "field": field,
+            "value": value,
+            "status": verdict.status,
+            "reason": verdict.reason,
+            "readback": verdict.readback,
+            "heard": self.heard,
+        })
         if verdict.status == ACCEPTED:
             self.fields[field] = verdict.value
             if field == "policy_number":
@@ -52,3 +98,25 @@ class ClaimRecord:
             return validate_date_of_loss(value, self.policy, today=self.today)
         return Verdict(REJECTED, None, f"unknown field {field!r}",
                        "Sorry, I didn't catch which detail that was.")
+
+    # --- the call record -------------------------------------------------
+
+    def as_dict(self):
+        return {
+            "session_id": self.session_id,
+            "started_at": self.started_at,
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "duration_seconds": self.elapsed(),
+            "attempts": self.attempts,
+            "accepted": {k: _plain(v) for k, v in self.fields.items()},
+        }
+
+    def write(self, directory="calls"):
+        """Write calls/<session_id>.json. Returns the path, or None if the
+        session never reached session.ready and so has no id."""
+        if not self.session_id:
+            return None
+        path = Path(directory) / f"{self.session_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.as_dict(), indent=2))
+        return path

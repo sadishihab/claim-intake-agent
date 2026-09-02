@@ -2,3 +2,4 @@
 venv/
 events.jsonl
 __pycache__/
+calls/
