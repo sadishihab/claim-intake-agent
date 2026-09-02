@@ -29,10 +29,13 @@ Never bias the recognizer toward the answer key when the recognizer's output
 is the evidence being validated.
 
 We set `input.keyterms` to the policy numbers in policies.json. Transcription
-accuracy improved on clean speech, and on a real call a caller saying "C411"
-got back "KD4-1188" — a real policy, which then passed exact-match validation.
-Three calls, three snaps onto the same policy. The partial transcripts show it
-happening: "...is C411." then "...is KD4-1188."
+accuracy improved on clean speech, and on a real call the recognizer revised
+its own answer onto a keyterm: the partials show "...is C411." then "...is
+KD4-1188." — a real policy, which then passed exact-match validation. I had
+deliberately read a number that is not on file; that part is recollection, the
+audio is not kept. Three sessions ran with keyterms and all three recorded
+KD4-1188, but only this one caught the revision in its partials — do not cite
+the other two as the same finding.
 
 Exact match against policies.json was only ever evidence because the
 recognizer knew nothing about policies.json. keyterms wired the answer key

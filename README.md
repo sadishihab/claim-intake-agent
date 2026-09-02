@@ -47,8 +47,10 @@ AssemblyAI supports `input.keyterms`, a list of words to bias transcription
 toward. Feeding it the real policy numbers is the obvious move, and on clean
 speech it measurably helped. It shipped.
 
-On a live call the caller deliberately read a policy number that is **not** on
-file. The partial transcripts show what happened:
+On a live call I deliberately read a policy number that is **not** on file.
+That the number was wrong is my recollection — the audio is not kept, so the
+log cannot prove what went into the microphone. What the log does show is the
+recogniser revising its own answer onto a keyterm:
 
 ```
 partial  'Yes, my policy number is C411.'
@@ -57,9 +59,11 @@ FINAL    'Yes, my policy number is KD4-1188.'
 -> recorded 'KD4-1188'  (a real policy, a different person)
 ```
 
-Three calls in a row snapped onto the same policy. Before keyterms, the same
-speaker on the same microphone produced `3841188`, `MACKKDK41138` and `D411` —
-all rejected, all safe.
+Three sessions ran with keyterms — the only three in the event log — and all
+three recorded `KD4-1188`. This is the one whose partials caught the revision
+happening; the other two show only the final value, so they are not evidence
+of the same thing. Before keyterms, the same speaker on the same microphone
+produced `3841188`, `MACKKDK41138` and `D411` — all rejected, all safe.
 
 **Every downstream guard still passed.** Exact match only, no fuzzy matching,
 the confusable-pair separation, the full evidence trail: all intact, all

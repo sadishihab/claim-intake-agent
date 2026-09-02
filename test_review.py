@@ -169,9 +169,9 @@ def test_the_worklet_resamples_and_batches():
 
 def test_keyterms_are_not_used():
     """Biasing the recognizer toward policies.json made it rewrite mis-heard
-    input onto a real policy: "C411" came back "KD4-1188" and validated, three
-    calls running. Exact match is only evidence while the recognizer knows
-    nothing about the answer key."""
+    input onto a real policy: the partials show "C411" revised to "KD4-1188",
+    which then validated. Exact match is only evidence while the recognizer
+    knows nothing about the answer key."""
     import protocol
 
     assert "keyterms" not in protocol.SESSION["input"]
