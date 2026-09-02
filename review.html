@@ -35,6 +35,23 @@
   h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.08em;
        color: var(--dim); margin: 28px 0 10px; }
 
+  .cols { display: grid; grid-template-columns: 22em 1fr; gap: 28px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+
+  #call { border: 2px solid var(--ink); padding: 16px; }
+  #start { font-size: 20px; font-weight: 700; padding: 14px 18px; width: 100%;
+           border: 3px solid var(--ok-edge); background: var(--ok-bg);
+           color: var(--ok-fg); cursor: pointer; }
+  #start.on { border-color: var(--rej-edge); background: var(--rej-bg); color: var(--rej-fg); }
+  #start:disabled { border-color: var(--nil-edge); background: var(--nil-bg);
+                    color: var(--nil-fg); cursor: default; }
+  #callstate { margin-top: 12px; font-size: 17px; font-weight: 600; }
+  #turns { margin-top: 14px; max-height: 22em; overflow-y: auto; }
+  .turn { padding: 7px 0; border-top: 1px solid var(--line); font-size: 17px; }
+  .turn b { display: block; font-size: 13px; text-transform: uppercase;
+            letter-spacing: 0.06em; color: var(--dim); }
+  .turn.partial { color: var(--dim); font-style: italic; }
+
   table { border-collapse: collapse; width: 100%; }
   th { text-align: left; font-size: 14px; text-transform: uppercase;
        letter-spacing: 0.06em; color: var(--dim); padding: 6px 10px;
@@ -79,14 +96,27 @@
   <select id="picker"><option value="">Live (newest call)</option></select>
 </header>
 
-<h2>Fields</h2>
-<table>
-  <thead><tr><th>Field</th><th>State</th><th>Value</th><th>Attempts</th></tr></thead>
-  <tbody id="fields"></tbody>
-</table>
+<div class="cols">
+  <section>
+    <h2>Call</h2>
+    <div id="call">
+      <button id="start">Start call</button>
+      <div id="callstate">Idle</div>
+      <div id="turns"></div>
+    </div>
+  </section>
 
-<h2>History</h2>
-<div id="attempts"><p class="none">No attempts yet.</p></div>
+  <section>
+    <h2>Fields</h2>
+    <table>
+      <thead><tr><th>Field</th><th>State</th><th>Value</th><th>Attempts</th></tr></thead>
+      <tbody id="fields"></tbody>
+    </table>
+
+    <h2>History</h2>
+    <div id="attempts"><p class="none">No attempts yet.</p></div>
+  </section>
+</div>
 
 <script>
 // Fallback only: every record carries the authoritative order in rec.fields.
@@ -194,6 +224,139 @@ el("picker").addEventListener("change", async e => {
   if (!id) return goLive();
   if (source) { source.close(); source = null; }
   load(await (await fetch("/api/calls/" + encodeURIComponent(id))).json(), false);
+});
+
+// --- the call itself ---------------------------------------------------
+// Audio never touches AssemblyAI directly: mic PCM goes to our server as binary
+// frames and reply audio comes back the same way, so the API key stays there.
+
+const RATE = 24000;
+let callWS = null, micCtx = null, outCtx = null, micStream = null;
+let playAt = 0, scheduled = [];
+
+function turn(who, text, partial) {
+  const box = document.getElementById("turns");
+  if (partial) {
+    let live = box.querySelector(".turn.partial");
+    if (!live) { live = document.createElement("div"); box.appendChild(live); }
+    live.className = "turn partial";
+    live.innerHTML = `<b>${esc(who)}</b>${esc(text)}`;
+  } else {
+    box.querySelector(".turn.partial")?.remove();
+    const div = document.createElement("div");
+    div.className = "turn";
+    div.innerHTML = `<b>${esc(who)}</b>${esc(text)}`;
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+function callState(text) { el("callstate").textContent = text; }
+
+function play(pcmBytes) {
+  // Scheduled on the AudioContext clock, never with a timer: each chunk starts
+  // exactly where the previous one ends, so the hardware paces playback.
+  const pcm16 = new Int16Array(pcmBytes);
+  const float32 = new Float32Array(pcm16.length);
+  for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
+  const buffer = outCtx.createBuffer(1, float32.length, RATE);
+  buffer.getChannelData(0).set(float32);
+  const src = outCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(outCtx.destination);
+  playAt = Math.max(playAt, outCtx.currentTime);
+  src.start(playAt);
+  playAt += buffer.duration;
+  scheduled.push(src);
+  src.onended = () => { scheduled = scheduled.filter(s => s !== src); };
+}
+
+function flushPlayback() {
+  // Barge-in: drop queued speech so the caller doesn't hear a stale sentence.
+  for (const src of scheduled) { try { src.stop(); } catch {} }
+  scheduled = [];
+  playAt = outCtx ? outCtx.currentTime : 0;
+}
+
+async function startCall() {
+  el("start").disabled = true;
+  callState("Asking for the microphone…");
+
+  // Echo cancellation on so the agent doesn't interrupt itself through the
+  // speakers. Noise suppression off — the server denoises, and stacking a
+  // second pass costs transcription accuracy.
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: false } });
+
+  micCtx = new AudioContext({ sampleRate: RATE });
+  outCtx = new AudioContext({ sampleRate: RATE });
+  await micCtx.resume(); await outCtx.resume();
+  await micCtx.audioWorklet.addModule("/pcm-processor.js");
+  playAt = outCtx.currentTime;
+
+  const worklet = new AudioWorkletNode(micCtx, "pcm-processor", {
+    processorOptions: { inputSampleRate: micCtx.sampleRate, targetSampleRate: RATE } });
+  micCtx.createMediaStreamSource(micStream).connect(worklet);
+  // Not connected to destination: that would loop the mic back to the speakers.
+
+  callState("Connecting…");
+  callWS = new WebSocket(`ws://${location.host}/ws/call`);
+  callWS.binaryType = "arraybuffer";
+
+  worklet.port.onmessage = e => {
+    if (callWS?.readyState === WebSocket.OPEN) callWS.send(e.data);
+  };
+
+  callWS.addEventListener("message", ev => {
+    if (ev.data instanceof ArrayBuffer) return play(ev.data);
+    const m = JSON.parse(ev.data);
+    if (m.kind === "ready") {
+      callState("Live — start speaking");
+      el("start").disabled = false;
+      el("start").textContent = "End call";
+      el("start").classList.add("on");
+    } else if (m.kind === "user_partial") turn("you", m.text, true);
+    else if (m.kind === "user_final") turn("you", m.text, false);
+    else if (m.kind === "agent") turn("agent", m.text, false);
+    else if (m.kind === "tool") turn(`${m.field} → ${m.status}`, m.value, false);
+    else if (m.kind === "interrupted") flushPlayback();
+    else if (m.kind === "error") callState(`Error: ${m.code} — ${m.message}`);
+    else if (m.kind === "ended") callState("Call ended");
+  });
+
+  callWS.addEventListener("close", () => endCall(true));
+}
+
+function endCall(remote) {
+  // session.end travels over our socket; the server relays it and waits for
+  // session.ended, so the 30s billable resume window never opens.
+  if (!remote && callWS?.readyState === WebSocket.OPEN) {
+    callWS.send(JSON.stringify({ action: "hangup" }));
+  }
+  micStream?.getTracks().forEach(t => t.stop());
+  micCtx?.close(); outCtx?.close();
+  callWS = null; micCtx = null; outCtx = null; micStream = null; scheduled = [];
+  el("start").textContent = "Start call";
+  el("start").classList.remove("on");
+  el("start").disabled = false;
+  if (!remote) callState("Call ended");
+}
+
+el("start").addEventListener("click", () => {
+  if (callWS) return endCall(false);
+  el("turns").innerHTML = "";
+  startCall().catch(err => {
+    callState("Could not start: " + err.message);
+    el("start").disabled = false;
+  });
+});
+
+// pagehide is more reliable than beforeunload on mobile Safari, and this must
+// be synchronous — anything awaited will not finish before the socket dies.
+window.addEventListener("pagehide", () => {
+  if (callWS?.readyState === WebSocket.OPEN) {
+    callWS.send(JSON.stringify({ action: "hangup" }));
+  }
 });
 
 refreshPicker();

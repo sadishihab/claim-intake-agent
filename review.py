@@ -8,12 +8,16 @@ exactly the same path as live ones.
 """
 
 import asyncio
+import contextlib
 import json
 import re
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
+
+import protocol
+from intake import ClaimRecord
 
 HERE = Path(__file__).parent
 CALLS = HERE / "calls"
@@ -78,6 +82,12 @@ def index():
     return FileResponse(HERE / "review.html")
 
 
+@app.get("/pcm-processor.js")
+def worklet():
+    """AudioWorklet modules load from a URL, so the processor is its own file."""
+    return FileResponse(HERE / "pcm-processor.js", media_type="text/javascript")
+
+
 @app.get("/api/calls")
 def list_calls():
     """Every call on disk, newest first."""
@@ -134,3 +144,62 @@ async def stream():
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.websocket("/ws/call")
+async def call(browser: WebSocket):
+    """Browser <-> here <-> AssemblyAI.
+
+    Only the audio transport changes: validation, tool handling and evidence
+    logging all still run in this process, and the API key never goes near the
+    browser. Mic audio arrives as binary frames and reply audio goes back the
+    same way; everything else is JSON.
+    """
+    await browser.accept()
+    claim = ClaimRecord(directory=CALLS)
+    ready, stop = asyncio.Event(), asyncio.Event()
+
+    async def on_audio(pcm):
+        await browser.send_bytes(pcm)
+
+    async def on_event(kind, data):
+        if kind == "ready":
+            ready.set()
+        await browser.send_json({"kind": kind, **data})
+
+    async def pump_browser(ws):
+        """Mic frames up. Held until session.ready, per the events reference."""
+        while True:
+            message = await browser.receive()
+            if message["type"] == "websocket.disconnect":
+                return stop.set()
+            if (chunk := message.get("bytes")) is not None:
+                if ready.is_set():
+                    await protocol.send_audio(ws, chunk)
+            elif (text := message.get("text")) is not None:
+                if json.loads(text).get("action") == "hangup":
+                    return stop.set()
+
+    try:
+        async with protocol.connect() as ws:
+            up = asyncio.create_task(pump_browser(ws))
+            down = asyncio.create_task(
+                protocol.run_session(ws, claim, on_audio, on_event))
+            await asyncio.wait([down, asyncio.create_task(stop.wait())],
+                               return_when=asyncio.FIRST_COMPLETED)
+            up.cancel()
+            try:
+                await protocol.end_session(ws)
+                await asyncio.wait_for(down, timeout=5)
+            except Exception:
+                pass
+            down.cancel()
+    except Exception as exc:                      # bad key, network, anything
+        with contextlib.suppress(Exception):
+            await browser.send_json({"kind": "error", "code": "server",
+                                     "message": str(exc)})
+    finally:
+        if path := claim.write():
+            print(f"call record: {path} ({len(claim.attempts)} attempts)")
+        with contextlib.suppress(Exception):
+            await browser.close()

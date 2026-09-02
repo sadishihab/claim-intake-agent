@@ -11,8 +11,7 @@ from datetime import date
 
 import pytest
 
-import agent
-from agent import ToolQueue, receive
+import protocol
 from intake import ClaimRecord
 from validators import ACCEPTED, REJECTED, UNCONFIRMED, load_policies
 
@@ -39,9 +38,17 @@ class FakeWS:
         return [m for m in self.sent if m["type"] == "tool.result"]
 
 
-class FakeSpeaker:
-    def play(self, pcm): pass
-    def flush(self): pass
+def sinks():
+    """Stand in for whatever a client does with audio and display events."""
+    audio, events = [], []
+
+    async def on_audio(pcm):
+        audio.append(pcm)
+
+    async def on_event(kind, data):
+        events.append((kind, data))
+
+    return on_audio, on_event, audio, events
 
 
 def turn(call_id, field, value, said, item, status="completed"):
@@ -72,10 +79,11 @@ SCRIPT = (
 @pytest.fixture
 def call(tmp_path, monkeypatch):
     """Run the script through receive() and return (claim, ws, record dict)."""
-    monkeypatch.setattr(agent, "EVENT_LOG", str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(protocol, "EVENT_LOG", str(tmp_path / "events.jsonl"))
     claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
     ws = FakeWS(SCRIPT)
-    asyncio.run(receive(ws, FakeSpeaker(), asyncio.Event(), ToolQueue(), claim))
+    on_audio, on_event, _, events = sinks()
+    asyncio.run(protocol.run_session(ws, claim, on_audio, on_event))
     path = claim.write()
     return claim, ws, json.loads(path.read_text()), path
 
@@ -183,10 +191,10 @@ def test_the_log_is_appended_as_the_call_happens(call):
 def test_a_crash_before_shutdown_still_leaves_the_evidence(tmp_path, monkeypatch):
     """No write() call at all — the summary never happens, but the trail of
     what the caller said and what was rejected survives."""
-    monkeypatch.setattr(agent, "EVENT_LOG", str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(protocol, "EVENT_LOG", str(tmp_path / "events.jsonl"))
     claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
-    asyncio.run(receive(FakeWS(SCRIPT), FakeSpeaker(), asyncio.Event(),
-                        ToolQueue(), claim))
+    on_audio, on_event, _, _ = sinks()
+    asyncio.run(protocol.run_session(FakeWS(SCRIPT), claim, on_audio, on_event))
     # simulate the process dying here: no claim.write()
     assert not claim.record_path().exists()
 
@@ -198,10 +206,10 @@ def test_a_crash_before_shutdown_still_leaves_the_evidence(tmp_path, monkeypatch
 
 def test_a_truncated_last_line_does_not_lose_the_rest(tmp_path, monkeypatch):
     """JSON Lines is the point: half a record costs one line, not the file."""
-    monkeypatch.setattr(agent, "EVENT_LOG", str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(protocol, "EVENT_LOG", str(tmp_path / "events.jsonl"))
     claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
-    asyncio.run(receive(FakeWS(SCRIPT), FakeSpeaker(), asyncio.Event(),
-                        ToolQueue(), claim))
+    on_audio, on_event, _, _ = sinks()
+    asyncio.run(protocol.run_session(FakeWS(SCRIPT), claim, on_audio, on_event))
 
     raw = claim.log_path().read_text()
     claim.log_path().write_text(raw[:-12])          # chop the tail mid-object
@@ -213,3 +221,27 @@ def test_a_truncated_last_line_does_not_lose_the_rest(tmp_path, monkeypatch):
         except json.JSONDecodeError:
             bad += 1
     assert bad == 1 and len(good) == 6              # header + 5 of 6 attempts
+
+
+# --- the shared seam both clients hang off ------------------------------
+
+def test_every_client_facing_event_reaches_the_sink(tmp_path, monkeypatch):
+    """The terminal prints these and the browser serialises them; the protocol
+    layer is what has to emit them."""
+    monkeypatch.setattr(protocol, "EVENT_LOG", str(tmp_path / "events.jsonl"))
+    claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
+    on_audio, on_event, audio, events = sinks()
+    script = ([{"type": "session.ready", "session_id": "sess_t"}]
+              + turn("c1", "policy_number", "BX7-4402", "bravo x-ray seven...", "i1")
+              + [{"type": "reply.audio", "data": "AAEAAQ=="},
+                 {"type": "reply.done", "reply_id": "r2", "status": "interrupted"},
+                 {"type": "session.error", "code": "boom", "message": "bad"},
+                 {"type": "session.ended"}])
+    asyncio.run(protocol.run_session(FakeWS(script), claim, on_audio, on_event))
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["ready", "user_final", "tool", "interrupted", "error", "ended"]
+    assert audio == [b"\x00\x01\x00\x01"]          # decoded, not base64
+    tool = dict(events)["tool"]
+    assert tool["field"] == "policy_number" and tool["status"] == "accepted"
+    assert tool["readback"].startswith("That's Bravo X-ray seven")

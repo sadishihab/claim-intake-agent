@@ -107,3 +107,31 @@ def test_newest_session_is_the_one_the_live_stream_follows(calls):
 
 def test_no_calls_means_no_session(calls):
     assert review.newest_session() is None
+
+
+# --- the browser must never see the key ----------------------------------
+
+BROWSER_ASSETS = ["review.html", "pcm-processor.js"]
+
+
+@pytest.mark.parametrize("name", BROWSER_ASSETS)
+def test_browser_assets_carry_no_credentials(name):
+    """Audio is proxied through this server precisely so the key stays here.
+    Nothing served to the browser may carry it, an auth header, or a direct
+    route to AssemblyAI that would need one."""
+    import os, re
+    from pathlib import Path
+
+    text = (Path(review.__file__).parent / name).read_text()
+    key = os.environ.get("ASSEMBLYAI_API_KEY")
+    if key:
+        assert key not in text
+    assert "Bearer" not in text
+    assert "Authorization" not in text
+    assert "agents.assemblyai.com" not in text
+    assert not re.search(r"[0-9a-f]{32,}", text)   # nothing key-shaped
+
+
+def test_the_call_socket_is_registered():
+    paths = [getattr(r, "path", "") for r in review.app.routes]
+    assert "/ws/call" in paths and "/pcm-processor.js" in paths
