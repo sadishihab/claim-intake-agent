@@ -179,6 +179,61 @@ def test_confirmed_cannot_skip_the_near_miss_question(claim):
     assert v.status == UNCONFIRMED and "date_of_loss" not in claim.fields
 
 
+# --- changing a value that is already recorded ----------------------------
+# Found by review: confirming that a value is RIGHT was being taken as
+# agreeing to REPLACE a different one. Two consents, never interchangeable.
+
+def test_changing_an_accepted_policy_number_still_spells_it_out(claim):
+    """The caller was moved onto a different holder's policy without ever
+    hearing the phonetic readback, because the change prompt satisfied the
+    check that was meant to prove the value had been spelled."""
+    accept_policy(claim, "BX7-4402")
+    assert claim.policy["holder_name"] == "Marcus Halloway"
+
+    spelled = claim.record("policy_number", "KD4-1188")
+    assert spelled.status == UNCONFIRMED
+    assert "Kilo Delta four" in spelled.readback          # the value, read back
+
+    change = claim.record("policy_number", "KD4-1188", confirmed=True)
+    assert change.status == UNCONFIRMED
+    assert "already have an answer" in change.readback    # and the change, asked
+    assert claim.fields["policy_number"] == "BX7-4402"    # still not moved
+
+    done = claim.record("policy_number", "KD4-1188", confirmed=True)
+    assert done.status == ACCEPTED
+    assert claim.fields["policy_number"] == "KD4-1188"
+    assert claim.policy["holder_name"] == "Denise Holloway"
+
+
+def test_agreeing_a_value_is_not_agreeing_to_replace_one(claim):
+    """A near-miss date said yes to "is that the date?" and was taken as yes to
+    "swap the date you already gave me"."""
+    accept_policy(claim, "BX7-4420")                      # cover from 2025-11-15
+    claim.record("date_of_loss", "2026-01-05")
+    assert claim.fields["date_of_loss"] == "2026-01-05"
+
+    near = claim.record("date_of_loss", "2025-11-12")     # 3 days early
+    assert near.status == UNCONFIRMED and "just outside" in near.readback
+
+    agreed = claim.record("date_of_loss", "2025-11-12", confirmed=True)
+    assert agreed.status == UNCONFIRMED
+    assert "already have an answer" in agreed.readback
+    assert claim.fields["date_of_loss"] == "2026-01-05"   # not overwritten
+
+    assert claim.record("date_of_loss", "2025-11-12", confirmed=True).status == ACCEPTED
+    assert claim.fields["date_of_loss"] == "2025-11-12"
+
+
+def test_the_immutability_guard_sees_promoted_values(claim):
+    """It used to run before promotion, so a confirmable hold walked straight
+    past it and was written by the promotion that followed."""
+    accept_policy(claim, "BX7-4402")
+    claim.record("date_of_loss", "2026-02-20")
+    for value in ("2026-03-04", "2026-03-04"):            # near miss, then agree
+        claim.record("date_of_loss", value, confirmed=(value == "2026-03-04"))
+    assert claim.fields["date_of_loss"] == "2026-02-20", "a promotion overwrote it"
+
+
 # --- an accepted field is not overwritten ---------------------------------
 
 def test_repeating_the_same_answer_changes_nothing(claim):

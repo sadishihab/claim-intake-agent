@@ -53,9 +53,11 @@ class ClaimRecord:
         self.fields = {}         # accepted values only — never a rejected one
         self.attempts = []       # every record_field call, in order
         self.heard = None        # most recent transcript.user
-        # (field, value) pairs we asked the caller to confirm. Resending one of
-        # these is the answer to a question, not a retry loop.
-        self._confirm_holds = set()
+        # (field, value) -> the kinds of question we put to the caller about it.
+        # "value"  we read the value back and asked if it is right
+        # "change" we asked whether they meant to replace what is already recorded
+        # They are different consents and one never substitutes for the other.
+        self._confirm_holds = {}
         self._escalated = set()          # say the phonetic ask once, not every time
         self.session_id = None
         self.started_at = None   # wall clock, for the reader
@@ -81,6 +83,9 @@ class ClaimRecord:
 
     # --- validation ------------------------------------------------------
 
+    def _holds_for(self, field, value):
+        return self._confirm_holds.setdefault(self._hold_key(field, value), set())
+
     def record(self, field, value, confirmed=False):
         # A confirming resubmission is the one case where repeating a value is
         # the right thing to do, so it skips the retry guard. Only a value we
@@ -90,12 +95,15 @@ class ClaimRecord:
         if not (confirmed and self._hold_key(field, value) in self._confirm_holds):
             verdict = self._resent_unconfirmed(field, value)
         verdict = verdict or self._validate(field, value)
-        verdict = self._already_recorded(field, value, verdict, confirmed)
         verdict = self._needs_confirmation(field, value, verdict, confirmed)
         verdict = self._promote_confirmed(field, value, verdict, confirmed)
+        # Last, so it sees the status the value would actually be written under.
+        # Run earlier it never saw a confirmable hold, which is how a near-miss
+        # date replaced an accepted one without anyone being asked.
+        verdict = self._already_recorded(field, value, verdict, confirmed)
         verdict = self._escalate(field, verdict)
         if verdict.status == UNCONFIRMED and verdict.confirmable:
-            self._confirm_holds.add(self._hold_key(field, value))
+            self._holds_for(field, value).add("value")
         self.attempts.append({
             "at_seconds": self.elapsed(),
             "field": field,
@@ -162,9 +170,13 @@ class ClaimRecord:
             return verdict
         if _plain(verdict.value) == _plain(self.fields[field]):
             return verdict                      # same answer, nothing changes
-        if confirmed:
-            return verdict                      # the caller corrected it on purpose
-        return replace(verdict, status=UNCONFIRMED, confirmable=True,
+        if confirmed and "change" in self._holds_for(field, value):
+            return verdict                      # the caller agreed to replace it
+        # Confirming that a value is right is not agreeing to replace a
+        # different one; a near-miss date said yes to "is that the date?" and
+        # was taken as yes to "swap the date you already gave me".
+        self._holds_for(field, value).add("change")
+        return replace(verdict, status=UNCONFIRMED,
                        reason=f"{field} is already recorded as "
                               f"{_plain(self.fields[field])!r}; this is a different answer",
                        readback="I already have an answer for that one. "
@@ -184,11 +196,10 @@ class ClaimRecord:
         """
         if field not in CONFIRM_FIELDS or verdict.status != ACCEPTED:
             return verdict
-        said = (value or "").strip().casefold()
-        read_back = any(a["field"] == field and a["status"] == UNCONFIRMED
-                        and (a["value"] or "").strip().casefold() == said
-                        for a in self.attempts)
-        if confirmed and read_back:
+        # Only a hold that actually spelled the value counts. A generic "did you
+        # want to change it?" used to satisfy this, which let a policy number be
+        # swapped for a different holder's without the phonetic readback.
+        if confirmed and "value" in self._holds_for(field, value):
             # Accepted readbacks are never spoken, so this must not stay a
             # question the model is tempted to ask again.
             return replace(verdict, readback="Thanks, I have that.")
@@ -205,7 +216,7 @@ class ClaimRecord:
         """
         if not (confirmed and verdict.status == UNCONFIRMED and verdict.confirmable):
             return verdict
-        if self._hold_key(field, value) not in self._confirm_holds:
+        if "value" not in self._holds_for(field, value):
             return verdict
         return replace(verdict, status=ACCEPTED, readback="Thanks, I have that.",
                        reason=verdict.reason + "; confirmed by the caller")
