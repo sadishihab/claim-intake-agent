@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from validators import (ACCEPTED, REJECTED, Verdict, load_policies,
+from validators import (ACCEPTED, REJECTED, UNCONFIRMED, Verdict, load_policies,
                         validate_callback_phone, validate_claimant_name,
                         validate_date_of_loss, validate_description,
                         validate_loss_type, validate_policy_number)
@@ -67,7 +67,7 @@ class ClaimRecord:
     # --- validation ------------------------------------------------------
 
     def record(self, field, value):
-        verdict = self._validate(field, value)
+        verdict = self._resent_unconfirmed(field, value) or self._validate(field, value)
         self.attempts.append({
             "at_seconds": self.elapsed(),
             "field": field,
@@ -87,6 +87,32 @@ class ClaimRecord:
                 self.policy = next(p for p in self.policies
                                    if p["policy_number"] == verdict.value)
         return verdict
+
+    def _resent_unconfirmed(self, field, value):
+        """Catch the agent re-sending a value that already came back unconfirmed.
+
+        Unconfirmed means the caller was asked a question and has not answered
+        it. Sending the same words again cannot change the answer, so the agent
+        sits in a retry loop on stale data. Returns the original readback — the
+        question the caller still owes an answer to — with a status that stops
+        the retry. Returns None when this is not a repeat.
+        """
+        said = (value or "").strip().casefold()
+        # Scan every prior attempt, not just the latest: once this exact value
+        # has come back unconfirmed it can never become accepted by resending,
+        # and stopping at the most recent match would let the guard's own
+        # rejection mask the unconfirmed behind it on the third try.
+        asked = next((a for a in self.attempts
+                      if a["field"] == field
+                      and (a["value"] or "").strip().casefold() == said
+                      and a["status"] == UNCONFIRMED), None)
+        if asked is None:
+            return None
+        return Verdict(
+            REJECTED, None,
+            f"{field} was already sent as {value!r} and came back unconfirmed; "
+            "ask the caller to choose and send their answer, not this value again",
+            asked["readback"])
 
     def _validate(self, field, value):
         if field == "policy_number":
