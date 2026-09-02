@@ -1,0 +1,57 @@
+{
+  "note": "Every utterance below is verbatim from calls/ and events.jsonl. The naive column is the value the model extracted from the transcript; the validated column is computed live by the real validators, so it cannot drift from the code.",
+  "scenes": [
+    {
+      "headline": true,
+      "field": "policy_number",
+      "caller": "reading a policy number that is not on file",
+      "partials": ["Yes, my policy number is C411.",
+                   "Yes, my policy number is KD4-1188."],
+      "transcript": "Yes, my policy number is KD4-1188.",
+      "naive": "KD4-1188",
+      "why": "Transcription was biased toward the list of real policy numbers, so the recognizer rewrote a wrong number into a real one. The exact-match check passed because the match had been manufactured: the validator was structurally powerless. Only reading the value back catches this."
+    },
+    {
+      "field": "policy_number",
+      "caller": "spelling a policy number letter by letter",
+      "partials": ["A, B, 4.", "A-D-4-1-1.", "A-D-4-1-1-8-8."],
+      "transcript": "A-D-4-1-1-8-8.",
+      "naive": "AD41188",
+      "why": "Spelled-out alphanumerics are where speech recognition is weakest."
+    },
+    {
+      "field": "policy_number",
+      "caller": "reading the twin of another policy on file",
+      "partials": ["bravo x-ray seven, four four two zero"],
+      "transcript": "bravo x-ray seven, four four two zero",
+      "naive": "BX7-4420",
+      "why": "BX7-4420 and BX7-4402 are both real policies belonging to different people. The readback separates them audibly: 'four four two zero' against 'four four zero two'."
+    },
+    {
+      "field": "claimant_name",
+      "policy": "KD4-1188",
+      "caller": "giving a name one letter from the policy holder",
+      "partials": ["Dennis Holloway."],
+      "transcript": "Dennis Holloway.",
+      "naive": "Dennis Holloway",
+      "why": "The holder is Denise Holloway. One letter apart is a mishearing, not a different person, so it is worth asking rather than either accepting or refusing."
+    },
+    {
+      "field": "date_of_loss",
+      "policy": "BX7-4402",
+      "caller": "giving a date with no year",
+      "partials": ["1st June."],
+      "transcript": "1st June.",
+      "naive": "1st June",
+      "why": "A date without a year is not a date. Guessing the current year would silently decide whether the claim falls inside the policy period."
+    },
+    {
+      "field": "loss_type",
+      "caller": "describing what happened",
+      "partials": ["Someone"],
+      "transcript": "Someone hit my car on purpose.",
+      "naive": "Someone hit my car on purpose",
+      "why": "Collision and vandalism are an accident-versus-deliberate distinction that changes how the claim is handled. Two categories match, so the agent asks."
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>What validation catches</title>
+<style>
+  :root {
+    --ink: #111; --dim: #555; --line: #c8c8c8;
+    --ok-fg: #0b5c2a;  --ok-bg: #e3f3e8;  --ok-edge: #1a7f3d;
+    --unc-fg: #7a4600; --unc-bg: #fbeed6; --unc-edge: #a86a00;
+    --rej-fg: #971b13; --rej-bg: #fbe3e1; --rej-edge: #c0271c;
+    --nil-fg: #444;    --nil-bg: #eee;    --nil-edge: #999;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px 32px 56px; background: #fff; color: var(--ink);
+         font: 19px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .sub { font-size: 20px; color: var(--dim); margin-bottom: 6px; }
+  .prov { font-size: 16px; color: var(--dim); max-width: 62em;
+          border-left: 4px solid var(--line); padding-left: 12px; margin: 14px 0 30px; }
+
+  .scene { border: 2px solid var(--ink); margin-bottom: 26px; }
+  .scene.headline { border-width: 4px; }
+  .scene > header { padding: 12px 18px; border-bottom: 2px solid var(--ink);
+                    background: #f6f6f6; }
+  .tag { font-size: 14px; text-transform: uppercase; letter-spacing: 0.1em;
+         color: var(--dim); font-weight: 700; }
+  .scene.headline > header { background: var(--rej-bg); }
+  .scene.headline .tag { color: var(--rej-fg); }
+  .caller { font-size: 21px; font-weight: 600; margin-top: 3px; }
+
+  .heard { padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .heard .lbl { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em;
+                color: var(--dim); font-weight: 700; }
+  .partial { font-size: 19px; color: var(--dim); }
+  .partial.last { color: var(--ink); font-weight: 700; }
+  .arrow { color: var(--rej-fg); font-weight: 700; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; }
+  .col { padding: 16px 18px; }
+  .col + .col { border-left: 2px solid var(--ink); }
+  .col h3 { margin: 0 0 10px; font-size: 15px; text-transform: uppercase;
+            letter-spacing: 0.1em; color: var(--dim); }
+  .badge { display: inline-block; padding: 4px 12px; border: 2px solid; border-radius: 3px;
+           font-size: 16px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.05em; }
+  .recorded    { color: var(--rej-fg); background: var(--rej-bg); border-color: var(--rej-edge); }
+  .accepted    { color: var(--ok-fg);  background: var(--ok-bg);  border-color: var(--ok-edge); }
+  .unconfirmed { color: var(--unc-fg); background: var(--unc-bg); border-color: var(--unc-edge); }
+  .rejected    { color: var(--rej-fg); background: var(--rej-bg); border-color: var(--rej-edge); }
+  .val { font-size: 27px; font-weight: 700; margin: 12px 0 6px; word-break: break-word; }
+  .val.none { color: var(--dim); font-weight: 400; font-size: 21px; font-style: italic; }
+  .says { font-size: 19px; border-left: 4px solid var(--line); padding-left: 12px;
+          margin-top: 10px; }
+  .says b { display: block; font-size: 13px; text-transform: uppercase;
+            letter-spacing: 0.08em; color: var(--dim); }
+  .why { padding: 14px 18px; border-top: 1px solid var(--line); background: #fafafa;
+         font-size: 17px; color: #333; }
+
+  .tally { border: 4px solid var(--ink); padding: 18px 22px; font-size: 22px; }
+  .tally b { font-size: 27px; }
+</style>
+
+<h1>Same call. Same transcript. Two systems.</h1>
+<div class="sub">Left: record what the recogniser returned. Right: this system.</div>
+<div class="prov" id="prov"></div>
+<div id="scenes"></div>
+<div class="tally" id="tally"></div>
+
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+fetch("/api/comparison").then(r => r.json()).then(data => {
+  document.getElementById("prov").textContent = data.note;
+
+  document.getElementById("scenes").innerHTML = data.scenes.map(s => {
+    const partials = s.partials.map((p, i) => {
+      const last = i === s.partials.length - 1;
+      const arrow = (s.partials.length > 1 && last) ? '<span class="arrow">&#8594;</span> ' : "";
+      return `<div class="partial${last ? " last" : ""}">${arrow}&ldquo;${esc(p)}&rdquo;</div>`;
+    }).join("");
+    const v = s.validated;
+    const recorded = v.status === "accepted";
+    return `
+      <section class="scene${s.headline ? " headline" : ""}">
+        <header>
+          <div class="tag">${s.headline ? "the one that matters" : esc(s.field)}</div>
+          <div class="caller">Caller ${esc(s.caller)}</div>
+        </header>
+        <div class="heard">
+          <div class="lbl">what the recogniser produced</div>
+          ${partials}
+        </div>
+        <div class="cols">
+          <div class="col">
+            <h3>Naive &mdash; trust the transcript</h3>
+            <span class="badge recorded">recorded</span>
+            <div class="val mono">${esc(s.naive)}</div>
+            <div class="says"><b>says to the caller</b>Nothing. It moves on.</div>
+          </div>
+          <div class="col">
+            <h3>Validated &mdash; this system</h3>
+            <span class="badge ${esc(v.status)}">${esc(v.status)}</span>
+            <div class="val mono${recorded ? "" : " none"}">${
+              recorded ? esc(v.value) : "nothing recorded"}</div>
+            <div class="says"><b>says to the caller</b>&ldquo;${esc(v.readback)}&rdquo;</div>
+          </div>
+        </div>
+        <div class="why">${esc(s.why)}</div>
+      </section>`;
+  }).join("");
+
+  const n = data.scenes.length;
+  const kept = data.scenes.filter(s => s.validated.status === "accepted").length;
+  const asked = data.scenes.filter(s => s.validated.status === "unconfirmed").length;
+  const refused = data.scenes.filter(s => s.validated.status === "rejected").length;
+  document.getElementById("tally").innerHTML =
+    `The naive system recorded <b>${n} of ${n}</b> values and asked <b>0</b> questions. ` +
+    `Every one of them is wrong.<br>This system recorded <b>${kept}</b>, ` +
+    `asked about <b>${asked}</b>, and refused <b>${refused}</b>.`;
+});
+</script>

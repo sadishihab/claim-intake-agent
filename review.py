@@ -101,6 +101,43 @@ def worklet():
     return FileResponse(HERE / "pcm-processor.js", media_type="text/javascript")
 
 
+@app.get("/compare")
+def compare_page():
+    """Side-by-side of what a system records with and without validation.
+    Public in every mode: this is what a judge is shown."""
+    return FileResponse(HERE / "compare.html")
+
+
+@app.get("/api/comparison")
+def comparison():
+    """Run every logged utterance through the real validators.
+
+    The naive column is the value the model extracted from the transcript. The
+    validated column is computed here rather than written down, so the page
+    cannot drift away from what the code actually does.
+    """
+    from intake import ClaimRecord
+
+    spec = json.loads((HERE / "comparison.json").read_text())
+    out = []
+    for scene in spec["scenes"]:
+        claim = ClaimRecord()          # never started, so it writes nothing
+        if policy := scene.get("policy"):
+            claim.record("policy_number", policy)
+            claim.record("policy_number", policy, confirmed=True)
+        verdict = claim.record(scene["field"], scene["naive"])
+        out.append({**scene,
+                    "validated": {"status": verdict.status,
+                                  "value": _plain(claim.fields.get(scene["field"])),
+                                  "readback": verdict.readback,
+                                  "reason": verdict.reason}})
+    return {"note": spec["note"], "scenes": out}
+
+
+def _plain(value):
+    return getattr(value, "value", value)
+
+
 @app.get("/api/config")
 def config():
     """The page asks what it is allowed to show."""

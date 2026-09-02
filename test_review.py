@@ -10,6 +10,7 @@ import json
 import pytest
 
 import review
+from validators import ACCEPTED, UNCONFIRMED
 
 
 @pytest.fixture
@@ -288,3 +289,48 @@ def test_the_key_is_read_once():
     src = (Path(review.__file__).parent / "protocol.py").read_text()
     assert src.count("load_dotenv()") == 1
     assert ".env" not in src.split("sys.exit(")[1].split(")")[0] or True
+
+
+# --- the comparison view --------------------------------------------------
+
+def test_the_comparison_is_public_in_every_mode():
+    """Judges see this on the deployed instance, where LOCAL_PANEL is off."""
+    paths = [getattr(r, "path", "") for r in review.app.routes]
+    assert "/compare" in paths and "/api/comparison" in paths
+
+
+def test_the_validated_column_is_computed_not_written_down():
+    """If it were written into the fixture it could drift from the code. Every
+    verdict here comes from the real validators at request time."""
+    import json
+    from pathlib import Path
+
+    spec = json.loads((Path(review.__file__).parent / "comparison.json").read_text())
+    assert not any("validated" in scene for scene in spec["scenes"])
+    for scene in review.comparison()["scenes"]:
+        assert set(scene["validated"]) == {"status", "value", "readback", "reason"}
+
+
+def test_the_headline_scene_is_the_manufactured_match():
+    """A caller said C411, the recogniser returned a real policy, and exact
+    match passed. Only the readback catches it."""
+    headline = [s for s in review.comparison()["scenes"] if s.get("headline")]
+    assert len(headline) == 1
+    scene = headline[0]
+    assert scene["naive"] == "KD4-1188"
+    assert "C411" in " ".join(scene["partials"])
+    assert scene["validated"]["status"] == UNCONFIRMED
+    assert "Kilo Delta" in scene["validated"]["readback"]
+
+
+def test_a_naive_reading_records_every_value_and_this_one_records_none():
+    scenes = review.comparison()["scenes"]
+    assert all(s["naive"] for s in scenes), "naive records something every time"
+    assert not any(s["validated"]["status"] == ACCEPTED for s in scenes)
+
+
+def test_rendering_the_comparison_writes_nothing(tmp_path, monkeypatch):
+    """It builds ClaimRecords; none of them may touch the call log."""
+    monkeypatch.setattr(review, "CALLS", tmp_path / "calls")
+    review.comparison()
+    assert not (tmp_path / "calls").exists()
