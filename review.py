@@ -10,6 +10,7 @@ exactly the same path as live ones.
 import asyncio
 import contextlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -27,7 +28,19 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 FIELDS = ["policy_number", "claimant_name", "date_of_loss",
           "callback_phone", "loss_type", "description"]
 
-app = FastAPI(title="claim review panel")
+# Locked down by default. Forgetting this variable in production would expose
+# every caller's record; forgetting it locally only hides the picker.
+LOCAL_PANEL = os.environ.get("LOCAL_PANEL") == "1"
+
+# A public /ws/call is a tap on a billed API. Reject past the cap rather than
+# queue, so a browser is told no instead of hanging.
+MAX_CALLS = int(os.environ.get("MAX_CALLS", "2"))
+_in_flight = 0
+
+app = FastAPI(title="claim review panel",
+              docs_url="/docs" if LOCAL_PANEL else None,
+              redoc_url="/redoc" if LOCAL_PANEL else None,
+              openapi_url="/openapi.json" if LOCAL_PANEL else None)
 
 
 def read_lines(path):
@@ -88,9 +101,18 @@ def worklet():
     return FileResponse(HERE / "pcm-processor.js", media_type="text/javascript")
 
 
+@app.get("/api/config")
+def config():
+    """The page asks what it is allowed to show."""
+    return {"local_panel": LOCAL_PANEL}
+
+
 @app.get("/api/calls")
 def list_calls():
-    """Every call on disk, newest first."""
+    """Every call on disk, newest first. Local only: on a public host this
+    would let a stranger enumerate other people's claims."""
+    if not LOCAL_PANEL:
+        raise HTTPException(404, "not found")
     logs = sorted(CALLS.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     out = []
     for log in logs:
@@ -110,10 +132,44 @@ def get_call(session_id: str):
     return build_record(session_id)
 
 
+@app.get("/api/stream/{session_id}")
+async def stream_one(session_id: str):
+    """Follow one call. The browser only learns its own session id, and the id
+    is 32 random hex characters, so this is an unlisted capability rather than
+    something a stranger can walk."""
+    if not SAFE_ID.match(session_id):
+        raise HTTPException(400, "bad session id")
+    return StreamingResponse(one_session(session_id), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+async def one_session(session_id):
+    """Snapshot, then each attempt as it is appended, then ended."""
+    snapshot = build_record(session_id)
+    sent = len(snapshot["attempts"])
+    ended = False
+    yield sse("call", snapshot)
+    while True:
+        attempts = [e for e in read_lines(CALLS / f"{session_id}.jsonl")
+                    if e.get("type") == "attempt"]
+        for attempt in attempts[sent:]:
+            yield sse("attempt", attempt)
+        sent = len(attempts)
+        if not ended and (CALLS / f"{session_id}.json").exists():
+            ended = True
+            yield sse("ended", build_record(session_id))
+        await asyncio.sleep(POLL_SECONDS)
+
+
 @app.get("/api/stream")
 async def stream():
-    """Follow the newest call. Emits `call` on (re)start, `attempt` per append,
+    """Follow the newest call, whichever it is. Local only: on a public host
+    one viewer would watch another caller's claim arrive live. Emits `call` on (re)start, `attempt` per append,
     `ended` when the summary lands, `idle` when there is nothing to show."""
+    if not LOCAL_PANEL:
+        raise HTTPException(404, "not found")
+
     async def events():
         current, sent, ended, idle = None, 0, False, False
         while True:
@@ -155,7 +211,13 @@ async def call(browser: WebSocket):
     browser. Mic audio arrives as binary frames and reply audio goes back the
     same way; everything else is JSON.
     """
+    global _in_flight
     await browser.accept()
+    if _in_flight >= MAX_CALLS:
+        await browser.send_json({"kind": "error", "code": "busy",
+                                 "message": "Too many calls in progress. Try again shortly."})
+        return await browser.close()
+    _in_flight += 1
     claim = ClaimRecord(directory=CALLS)
     ready, stop = asyncio.Event(), asyncio.Event()
 
@@ -199,6 +261,7 @@ async def call(browser: WebSocket):
             await browser.send_json({"kind": "error", "code": "server",
                                      "message": str(exc)})
     finally:
+        _in_flight -= 1
         if path := claim.write():
             print(f"call record: {path} ({len(claim.attempts)} attempts)")
         with contextlib.suppress(Exception):

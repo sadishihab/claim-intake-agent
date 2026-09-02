@@ -19,18 +19,14 @@ from dotenv import load_dotenv
 load_dotenv()
 API_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 if not API_KEY:
-    sys.exit("ASSEMBLYAI_API_KEY missing — put it in .env")
+    sys.exit("ASSEMBLYAI_API_KEY missing — set it in the environment "
+             "(Railway variables in production, .env locally)")
 
 URL = "wss://agents.assemblyai.com/v1/ws"
 EVENT_LOG = "events.jsonl"
 
 FIELDS = ["policy_number", "claimant_name", "date_of_loss",
           "callback_phone", "loss_type", "description"]
-
-load_dotenv()
-API_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
-if not API_KEY:
-    sys.exit("ASSEMBLYAI_API_KEY missing — put it in .env")
 
 # No input.keyterms here on purpose. Biasing the recognizer toward the policy
 # numbers made it rewrite mis-heard input onto a real policy -- "C411" came back

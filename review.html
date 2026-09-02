@@ -190,9 +190,9 @@ function load(rec, live) {
   render();
 }
 
-function goLive() {
+function subscribe(url) {
   if (source) source.close();
-  source = new EventSource("/api/stream");
+  source = new EventSource(url);
   source.addEventListener("call", e => load(JSON.parse(e.data), true));
   source.addEventListener("ended", e => setHeader(JSON.parse(e.data), true));
   source.addEventListener("idle", () => {
@@ -208,6 +208,12 @@ function goLive() {
       ?.scrollIntoView({ block: "nearest" });
   });
 }
+
+// Local dev follows whichever call is newest. In public mode the browser only
+// ever follows the call it started: the session id is 32 random hex characters
+// and is never listed, so one caller cannot reach another's claim.
+function goLive() { subscribe("/api/stream"); }
+function followSession(sid) { subscribe(`/api/stream/${encodeURIComponent(sid)}`); }
 
 async function refreshPicker() {
   const calls = await (await fetch("/api/calls")).json();
@@ -308,7 +314,8 @@ async function startCall() {
   // Not connected to destination: that would loop the mic back to the speakers.
 
   callState("Connecting…");
-  callWS = new WebSocket(`ws://${location.host}/ws/call`);
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  callWS = new WebSocket(`${scheme}//${location.host}/ws/call`);
   callWS.binaryType = "arraybuffer";
 
   worklet.port.onmessage = e => {
@@ -319,6 +326,7 @@ async function startCall() {
     if (ev.data instanceof ArrayBuffer) return play(ev.data);
     const m = JSON.parse(ev.data);
     if (m.kind === "ready") {
+      if (!isLocal && m.session_id) followSession(m.session_id);
       callState("Live — start speaking");
       el("start").disabled = false;
       el("start").textContent = "End call";
@@ -367,7 +375,21 @@ window.addEventListener("pagehide", () => {
   }
 });
 
-refreshPicker();
-setInterval(refreshPicker, 5000);
-goLive();
+let isLocal = false;
+
+async function boot() {
+  try {
+    isLocal = (await (await fetch("/api/config")).json()).local_panel;
+  } catch { isLocal = false; }          // assume public if we cannot tell
+  if (isLocal) {
+    refreshPicker();
+    setInterval(refreshPicker, 5000);
+    goLive();                            // follow whatever call is newest
+  } else {
+    el("picker").hidden = true;          // no browsing other people's calls
+    render();
+  }
+}
+
+boot();
 </script>

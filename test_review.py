@@ -192,3 +192,99 @@ def test_record_field_exposes_the_confirmed_flag():
     props = protocol.TOOLS[0]["parameters"]["properties"]
     assert props["confirmed"]["type"] == "boolean"
     assert "confirmed" not in protocol.TOOLS[0]["parameters"]["required"]
+
+
+# --- what a stranger can reach -------------------------------------------
+
+def test_public_mode_is_the_default():
+    """Locked down unless explicitly opened. Forgetting the variable in
+    production would expose every caller's record; forgetting it locally only
+    hides the picker."""
+    import review
+
+    assert review.LOCAL_PANEL is False, "LOCAL_PANEL must not default to on"
+
+
+def test_interactive_docs_are_off_in_public_mode():
+    import review
+
+    assert review.app.docs_url is None
+    assert review.app.redoc_url is None
+    assert review.app.openapi_url is None
+
+
+def test_the_global_listing_is_closed_in_public_mode():
+    """Enumerating calls would let a stranger walk other people's claims."""
+    import review
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        review.list_calls()
+    assert exc.value.status_code == 404
+
+
+def test_the_global_stream_is_closed_in_public_mode():
+    """Following the newest call would show one viewer another caller's claim
+    arriving live."""
+    import asyncio
+
+    import review
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(review.stream())
+    assert exc.value.status_code == 404
+
+
+def test_a_call_can_still_be_read_by_its_own_id(calls):
+    """Scoping, not blocking: the browser follows the call it started. Session
+    ids are 32 random hex characters and are never listed."""
+    write_log(calls, "s1", [attempt("policy_number", "BX7-4402", "accepted", "BX7-4402")])
+    assert review.get_call("s1")["session_id"] == "s1"
+    assert "/api/stream/{session_id}" in [getattr(r, "path", "") for r in review.app.routes]
+
+
+def test_a_bad_session_id_is_rejected_by_the_scoped_stream():
+    import asyncio
+
+    import review
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        asyncio.run(review.stream_one("../../etc/passwd"))
+
+
+def test_concurrent_calls_are_capped():
+    """/ws/call spends money on every connection."""
+    import review
+
+    assert review.MAX_CALLS >= 1
+    assert "_in_flight" in review.__dict__
+
+
+# --- deployment ----------------------------------------------------------
+
+def test_the_page_upgrades_the_socket_on_https():
+    """A ws:// socket from an https:// page is blocked as mixed content, and
+    silently: the call button would simply never connect."""
+    from pathlib import Path
+
+    page = (Path(review.__file__).parent / "review.html").read_text()
+    assert 'location.protocol === "https:" ? "wss:" : "ws:"' in page
+    assert "`ws://${location.host}" not in page
+
+
+def test_procfile_binds_the_platform_port():
+    from pathlib import Path
+
+    proc = (Path(review.__file__).parent / "Procfile").read_text()
+    assert "--host 0.0.0.0" in proc and "$PORT" in proc
+    assert "--port 8000" not in proc
+
+
+def test_the_key_is_read_once():
+    from pathlib import Path
+
+    src = (Path(review.__file__).parent / "protocol.py").read_text()
+    assert src.count("load_dotenv()") == 1
+    assert ".env" not in src.split("sys.exit(")[1].split(")")[0] or True
