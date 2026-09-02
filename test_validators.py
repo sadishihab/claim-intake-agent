@@ -151,6 +151,38 @@ def test_date_rejected_when_unparseable(spoken):
     assert validate_date_of_loss(spoken, RAGHUNATHAN, today=TODAY).status == REJECTED
 
 
+@pytest.mark.parametrize("spoken", [
+    "1st June", "June 1", "the first of June", "06-01", "0601", "06/01",
+    "--06-01", "2026-06", "1 June", "June", "next Tuesday",
+])
+def test_a_date_without_a_year_never_gets_one_invented(spoken):
+    """A year-less date is not a date. The agent has to go back and ask, so the
+    validator must reject rather than fill in this year, the policy's year, or
+    anything else."""
+    v = validate_date_of_loss(spoken, RAGHUNATHAN, today=TODAY)
+    assert v.status == REJECTED
+    assert v.value is None
+
+    # Nothing anywhere in the verdict may carry a guessed year.
+    plausible = {str(TODAY.year), str(TODAY.year - 1),
+                 RAGHUNATHAN["effective_date"][:4], RAGHUNATHAN["expiry_date"][:4]}
+    assert not any(year in (v.value or "") for year in plausible)
+    assert not any(year in v.readback for year in plausible)
+
+
+def test_the_year_less_readback_asks_for_the_year(spoken="1st June"):
+    """The readback is what the agent says, so it has to name what is missing."""
+    v = validate_date_of_loss(spoken, RAGHUNATHAN, today=TODAY)
+    assert "year" in v.readback.lower()
+
+
+@pytest.mark.parametrize("spoken", ["20260601", "2026-W22-1", "2026-152"])
+def test_only_yyyy_mm_dd_is_accepted(spoken):
+    """date.fromisoformat also takes basic and week formats. 2026-W22-1 is 25
+    May — a date nobody said out loud — so the prompt's format is enforced."""
+    assert validate_date_of_loss(spoken, RAGHUNATHAN, today=TODAY).status == REJECTED
+
+
 # --- callback phone ------------------------------------------------------
 
 @pytest.mark.parametrize("spoken", ["5551234567", "(555) 123-4567", "1-555-123-4567"])

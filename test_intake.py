@@ -56,6 +56,13 @@ def test_date_is_checked_against_the_resolved_policy(claim):
     assert other.record("date_of_loss", "2026-06-01").status == REJECTED
 
 
+def test_a_year_less_date_is_not_recorded(claim):
+    """End of the chain: nothing lands in the record without a real year."""
+    claim.record("policy_number", "BX7-4420")
+    assert claim.record("date_of_loss", "1st June").status == REJECTED
+    assert "date_of_loss" not in claim.fields
+
+
 def test_stateless_fields_need_no_policy(claim):
     assert claim.record("callback_phone", "(555) 123-4567").status == ACCEPTED
     assert claim.record("loss_type", "there was a fire").status == ACCEPTED

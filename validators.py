@@ -143,14 +143,26 @@ def validate_claimant_name(spoken: str, policy: dict) -> Verdict:
 
 # --- date of loss --------------------------------------------------------
 
+# Strict YYYY-MM-DD. date.fromisoformat also accepts basic format (20260601)
+# and week dates (2026-W22-1, which is 25 May) — neither is what the prompt
+# asks the model for, and a week date would land on a day nobody said.
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def validate_date_of_loss(spoken: str, policy: dict, today: date | None = None) -> Verdict:
     """`spoken` is ISO-8601 (YYYY-MM-DD); the model normalizes before calling."""
     today = today or date.today()
+    text = (spoken or "").strip()
+    if not ISO_DATE_RE.match(text):
+        # No year means no date. Never fill one in — the caller has to say it.
+        return Verdict(REJECTED, None, f"{spoken!r} is not an ISO-8601 date",
+                       "Sorry, what date did this happen? I need the day, the "
+                       "month and the year.")
     try:
-        loss = date.fromisoformat((spoken or "").strip())
+        loss = date.fromisoformat(text)
     except ValueError:
-        return Verdict(REJECTED, None, f"{spoken!r} is not a date",
-                       "Sorry, what date did this happen?")
+        return Verdict(REJECTED, None, f"{spoken!r} is not a real date",
+                       "That date doesn't look right. What date did this happen?")
     spoken_date = f"{loss:%A}, {loss.day} {loss:%B} {loss.year}"
     start = date.fromisoformat(policy["effective_date"])
     end = date.fromisoformat(policy["expiry_date"])
