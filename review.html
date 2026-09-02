@@ -1,0 +1,202 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Claim review</title>
+<style>
+  :root {
+    --ink: #111;
+    --dim: #555;
+    --line: #c8c8c8;
+    --ok-fg: #0b5c2a;    --ok-bg: #e3f3e8;    --ok-edge: #1a7f3d;
+    --unc-fg: #7a4600;   --unc-bg: #fbeed6;   --unc-edge: #a86a00;
+    --rej-fg: #971b13;   --rej-bg: #fbe3e1;   --rej-edge: #c0271c;
+    --nil-fg: #444;      --nil-bg: #eee;      --nil-edge: #999;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: #fff; color: var(--ink);
+    font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+           border-bottom: 3px solid var(--ink); padding-bottom: 12px; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: -0.01em; }
+  #sid { font-size: 20px; font-weight: 700; }
+  #meta { color: var(--dim); font-size: 16px; }
+  select { font-size: 16px; padding: 6px 8px; margin-left: auto;
+           border: 2px solid var(--ink); background: #fff; color: var(--ink); }
+
+  .live { display: inline-block; padding: 3px 10px; font-size: 15px; font-weight: 700;
+          border-radius: 3px; border: 2px solid var(--ok-edge);
+          color: var(--ok-fg); background: var(--ok-bg); }
+  .live.off { border-color: var(--nil-edge); color: var(--nil-fg); background: var(--nil-bg); }
+
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.08em;
+       color: var(--dim); margin: 28px 0 10px; }
+
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-size: 14px; text-transform: uppercase;
+       letter-spacing: 0.06em; color: var(--dim); padding: 6px 10px;
+       border-bottom: 2px solid var(--line); }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--line); font-size: 18px;
+       vertical-align: middle; }
+  td.name { font-weight: 600; width: 15em; }
+  td.val { font-size: 19px; }
+  td.tries { color: var(--dim); font-size: 16px; width: 16em; }
+
+  .badge { display: inline-block; min-width: 7.5em; text-align: center;
+           padding: 3px 10px; border-radius: 3px; font-size: 15px;
+           font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+           border: 2px solid; }
+  .accepted    { color: var(--ok-fg);  background: var(--ok-bg);  border-color: var(--ok-edge); }
+  .unconfirmed { color: var(--unc-fg); background: var(--unc-bg); border-color: var(--unc-edge); }
+  .rejected    { color: var(--rej-fg); background: var(--rej-bg); border-color: var(--rej-edge); }
+  .empty       { color: var(--nil-fg); background: var(--nil-bg); border-color: var(--nil-edge); }
+
+  .attempt { border: 1px solid var(--line); border-left-width: 8px;
+             padding: 12px 14px; margin-bottom: 10px; }
+  .attempt.accepted    { border-left-color: var(--ok-edge); }
+  .attempt.unconfirmed { border-left-color: var(--unc-edge); }
+  .attempt.rejected    { border-left-color: var(--rej-edge); }
+  .row1 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .at { color: var(--dim); font-size: 16px; min-width: 5.5em; }
+  .field { font-weight: 700; font-size: 18px; }
+  .value { font-size: 21px; font-weight: 700; margin: 8px 0 4px; }
+  .reason { color: var(--dim); font-size: 16px; }
+  .heard { margin-top: 8px; padding-left: 12px; border-left: 3px solid var(--line);
+           font-size: 17px; color: #333; }
+  .heard b { color: var(--dim); font-weight: 600; font-size: 14px;
+             text-transform: uppercase; letter-spacing: 0.06em; display: block; }
+  .none { color: var(--dim); font-style: italic; }
+</style>
+
+<header>
+  <h1>Claim review</h1>
+  <span id="sid">—</span>
+  <span id="livebadge" class="live off">no call</span>
+  <span id="meta"></span>
+  <select id="picker"><option value="">Live (newest call)</option></select>
+</header>
+
+<h2>Fields</h2>
+<table>
+  <thead><tr><th>Field</th><th>State</th><th>Value</th><th>Attempts</th></tr></thead>
+  <tbody id="fields"></tbody>
+</table>
+
+<h2>History</h2>
+<div id="attempts"><p class="none">No attempts yet.</p></div>
+
+<script>
+// Fallback only: every record carries the authoritative order in rec.fields.
+let FIELDS = ["policy_number", "claimant_name", "date_of_loss",
+              "callback_phone", "loss_type", "description"];
+let attempts = [], source = null;
+
+const el = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function renderFields() {
+  el("fields").innerHTML = FIELDS.map(name => {
+    const mine = attempts.filter(a => a.field === name);
+    const last = mine[mine.length - 1];
+    const state = last ? last.status : "empty";
+    const ok = [...mine].reverse().find(a => a.status === "accepted");
+    const value = ok ? (ok.accepted_value ?? ok.value) : "";
+    const rejected = mine.filter(a => a.status === "rejected").length;
+    const unconfirmed = mine.filter(a => a.status === "unconfirmed").length;
+    const extra = [];
+    if (rejected) extra.push(`${rejected} rejected`);
+    if (unconfirmed) extra.push(`${unconfirmed} unconfirmed`);
+    const note = mine.length === 0 ? "—"
+      : `${mine.length} ${mine.length === 1 ? "attempt" : "attempts"}`
+        + (extra.length ? ` · ${extra.join(", ")}` : "");
+    return `<tr>
+      <td class="name">${esc(name)}</td>
+      <td><span class="badge ${state}">${state}</span></td>
+      <td class="val mono">${esc(value)}</td>
+      <td class="tries">${note}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderAttempts() {
+  if (!attempts.length) {
+    el("attempts").innerHTML = '<p class="none">No attempts yet.</p>';
+    return;
+  }
+  el("attempts").innerHTML = attempts.map(a => `
+    <div class="attempt ${a.status}">
+      <div class="row1">
+        <span class="at mono">${Number(a.at_seconds).toFixed(1)}s</span>
+        <span class="field">${esc(a.field)}</span>
+        <span class="badge ${a.status}">${a.status}</span>
+      </div>
+      <div class="value mono">${esc(a.value)}</div>
+      <div class="reason">${esc(a.reason)}</div>
+      ${a.heard ? `<div class="heard"><b>caller said</b>${esc(a.heard.text)}</div>` : ""}
+    </div>`).join("");
+}
+
+function render() { renderFields(); renderAttempts(); }
+
+function setHeader(rec, live) {
+  el("sid").textContent = rec?.session_id ?? "—";
+  const badge = el("livebadge");
+  badge.textContent = live ? (rec?.ended_at ? "ended" : "live") : "past call";
+  badge.className = "live" + (live && !rec?.ended_at ? "" : " off");
+  const bits = [];
+  if (rec?.started_at) bits.push("started " + rec.started_at.replace("T", " ").slice(0, 19));
+  if (rec?.duration_seconds != null) bits.push(rec.duration_seconds.toFixed(1) + "s");
+  el("meta").textContent = bits.join("  ·  ");
+}
+
+function load(rec, live) {
+  if (rec.fields && rec.fields.length) FIELDS = rec.fields;   // schema order
+  attempts = rec.attempts || [];
+  setHeader(rec, live);
+  render();
+}
+
+function goLive() {
+  if (source) source.close();
+  source = new EventSource("/api/stream");
+  source.addEventListener("call", e => load(JSON.parse(e.data), true));
+  source.addEventListener("ended", e => setHeader(JSON.parse(e.data), true));
+  source.addEventListener("idle", () => {
+    attempts = [];
+    setHeader(null, false);
+    el("livebadge").textContent = "no call";
+    render();
+  });
+  source.addEventListener("attempt", e => {
+    attempts.push(JSON.parse(e.data));
+    render();
+    document.querySelector("#attempts .attempt:last-child")
+      ?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+async function refreshPicker() {
+  const calls = await (await fetch("/api/calls")).json();
+  const keep = el("picker").value;
+  el("picker").innerHTML = '<option value="">Live (newest call)</option>' +
+    calls.map(c => `<option value="${esc(c.session_id)}">${esc(c.session_id)}` +
+      ` — ${c.attempts} attempts, ${c.accepted}/6 accepted` +
+      `${c.ended ? "" : " (in progress)"}</option>`).join("");
+  el("picker").value = keep;
+}
+
+el("picker").addEventListener("change", async e => {
+  const id = e.target.value;
+  if (!id) return goLive();
+  if (source) { source.close(); source = null; }
+  load(await (await fetch("/api/calls/" + encodeURIComponent(id))).json(), false);
+});
+
+refreshPicker();
+setInterval(refreshPicker, 5000);
+goLive();
+</script>

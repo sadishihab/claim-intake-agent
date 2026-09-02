@@ -75,6 +75,9 @@ class ClaimRecord:
             "status": verdict.status,
             "reason": verdict.reason,
             "readback": verdict.readback,
+            # The normalized value, so the log alone is enough to render a call:
+            # loss_type arrives as "someone hit me" and lands as "collision".
+            "accepted_value": _plain(verdict.value) if verdict.status == ACCEPTED else None,
             "heard": self.heard,
         })
         self._append({"type": "attempt", **self.attempts[-1]})
