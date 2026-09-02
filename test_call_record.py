@@ -73,10 +73,10 @@ SCRIPT = (
 def call(tmp_path, monkeypatch):
     """Run the script through receive() and return (claim, ws, record dict)."""
     monkeypatch.setattr(agent, "EVENT_LOG", str(tmp_path / "events.jsonl"))
-    claim = ClaimRecord(POLICIES, today=TODAY)
+    claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
     ws = FakeWS(SCRIPT)
     asyncio.run(receive(ws, FakeSpeaker(), asyncio.Event(), ToolQueue(), claim))
-    path = claim.write(tmp_path / "calls")
+    path = claim.write()
     return claim, ws, json.loads(path.read_text()), path
 
 
@@ -156,8 +156,60 @@ def test_a_tool_result_went_back_for_every_call(call):
 
 
 def test_nothing_is_written_when_the_session_never_started(tmp_path):
-    """No session.ready means no session_id, so no file to name."""
-    claim = ClaimRecord(POLICIES, today=TODAY)
+    """No session.ready means no session_id, so no file to name — and the
+    incremental append has to stay quiet too, not crash or make a stray file."""
+    claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
     claim.record("policy_number", "BX7-4402")
-    assert claim.write(tmp_path / "calls") is None
+    assert claim.write() is None
     assert not (tmp_path / "calls").exists()
+
+
+# --- crash safety --------------------------------------------------------
+
+def lines(claim):
+    return [json.loads(l) for l in claim.log_path().read_text().splitlines()]
+
+
+def test_the_log_is_appended_as_the_call_happens(call):
+    """Every attempt is on disk before the session ends."""
+    claim, _, record, _ = call
+    entries = lines(claim)
+    assert entries[0]["type"] == "session.start"
+    assert entries[0]["session_id"] == "sess_test123"
+    assert [e["type"] for e in entries[1:]] == ["attempt"] * 6
+    assert [e["field"] for e in entries[1:]] == [a["field"] for a in record["attempts"]]
+
+
+def test_a_crash_before_shutdown_still_leaves_the_evidence(tmp_path, monkeypatch):
+    """No write() call at all — the summary never happens, but the trail of
+    what the caller said and what was rejected survives."""
+    monkeypatch.setattr(agent, "EVENT_LOG", str(tmp_path / "events.jsonl"))
+    claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
+    asyncio.run(receive(FakeWS(SCRIPT), FakeSpeaker(), asyncio.Event(),
+                        ToolQueue(), claim))
+    # simulate the process dying here: no claim.write()
+    assert not claim.record_path().exists()
+
+    entries = lines(claim)
+    tries = [e for e in entries if e.get("field") == "policy_number"]
+    assert [e["status"] for e in tries] == [REJECTED, REJECTED, ACCEPTED]
+    assert tries[0]["heard"]["text"] == "my policy is B X 7 4 4 0"
+
+
+def test_a_truncated_last_line_does_not_lose_the_rest(tmp_path, monkeypatch):
+    """JSON Lines is the point: half a record costs one line, not the file."""
+    monkeypatch.setattr(agent, "EVENT_LOG", str(tmp_path / "events.jsonl"))
+    claim = ClaimRecord(POLICIES, today=TODAY, directory=tmp_path / "calls")
+    asyncio.run(receive(FakeWS(SCRIPT), FakeSpeaker(), asyncio.Event(),
+                        ToolQueue(), claim))
+
+    raw = claim.log_path().read_text()
+    claim.log_path().write_text(raw[:-12])          # chop the tail mid-object
+
+    good, bad = [], 0
+    for line in claim.log_path().read_text().splitlines():
+        try:
+            good.append(json.loads(line))
+        except json.JSONDecodeError:
+            bad += 1
+    assert bad == 1 and len(good) == 6              # header + 5 of 6 attempts

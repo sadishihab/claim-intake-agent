@@ -1,6 +1,10 @@
 """Per-call claim state: turn one record_field tool call into a Verdict, and
 keep the evidence trail for the whole call.
 
+Attempts are appended to calls/<session_id>.jsonl as they happen, so a crash or
+a dropped socket keeps everything up to that point. The complete record is
+written to calls/<session_id>.json on clean shutdown.
+
 validators.py is stateless — one pure function per field. Two of those functions
 need the caller's policy record, which only exists once the policy number has
 been accepted. This module holds that state, the accepted values, and every
@@ -30,8 +34,9 @@ class ClaimRecord:
     """Accepted field values for one call, the policy they belong to, and the
     full attempt history including rejections."""
 
-    def __init__(self, policies=None, today=None):
+    def __init__(self, policies=None, today=None, directory="calls"):
         self.policies = load_policies() if policies is None else policies
+        self.directory = Path(directory)
         self.today = today       # pinned in tests; None means date.today()
         self.policy = None       # resolved when policy_number is accepted
         self.fields = {}         # accepted values only — never a rejected one
@@ -47,6 +52,8 @@ class ClaimRecord:
         self.session_id = session_id
         self.started_at = datetime.now(timezone.utc).isoformat()
         self._t0 = time.monotonic()
+        self._append({"type": "session.start", "session_id": session_id,
+                      "started_at": self.started_at})
 
     def note_user_transcript(self, item_id, text):
         """Latest final caller utterance, attached to whatever they say next."""
@@ -70,6 +77,7 @@ class ClaimRecord:
             "readback": verdict.readback,
             "heard": self.heard,
         })
+        self._append({"type": "attempt", **self.attempts[-1]})
         if verdict.status == ACCEPTED:
             self.fields[field] = verdict.value
             if field == "policy_number":
@@ -111,12 +119,36 @@ class ClaimRecord:
             "accepted": {k: _plain(v) for k, v in self.fields.items()},
         }
 
-    def write(self, directory="calls"):
-        """Write calls/<session_id>.json. Returns the path, or None if the
-        session never reached session.ready and so has no id."""
+    def log_path(self):
+        """Append-only trail, written as the call happens."""
+        return self.directory / f"{self.session_id}.jsonl"
+
+    def record_path(self):
+        """Complete record, written once on clean shutdown."""
+        return self.directory / f"{self.session_id}.json"
+
+    def _append(self, obj):
+        """Append one line to the call log.
+
+        JSON Lines, not JSON: a crash mid-call leaves every completed line
+        readable, where a half-written JSON object would parse as nothing. Never
+        raises — failing to log must not end a live call.
+        """
+        if not self.session_id:
+            return
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            with open(self.log_path(), "a") as f:
+                f.write(json.dumps(obj) + "\n")
+        except OSError as exc:
+            print(f"[warn] could not append to call log: {exc}")
+
+    def write(self):
+        """Write the complete record. Returns the path, or None if the session
+        never reached session.ready and so has no id to name the file by."""
         if not self.session_id:
             return None
-        path = Path(directory) / f"{self.session_id}.json"
+        path = self.record_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.as_dict(), indent=2))
         return path
