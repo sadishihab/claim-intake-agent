@@ -147,6 +147,38 @@ def test_the_repeat_is_visible_in_the_call_record(claim):
     assert statuses == [UNCONFIRMED, REJECTED]
 
 
+# --- dates just outside cover --------------------------------------------
+
+def test_a_date_a_few_days_outside_cover_is_asked_about(claim):
+    """More often a caller misremembering than an uncovered claim, so ask."""
+    accept_policy(claim, "BX7-4402")               # cover ended 2026-03-01
+    v = claim.record("date_of_loss", "2026-03-04")
+    assert v.status == UNCONFIRMED and v.confirmable
+    assert "just outside" in v.readback
+    assert "date_of_loss" not in claim.fields
+
+
+def test_the_caller_can_confirm_a_near_miss_date(claim):
+    accept_policy(claim, "BX7-4402")
+    claim.record("date_of_loss", "2026-03-04")
+    v = claim.record("date_of_loss", "2026-03-04", confirmed=True)
+    assert v.status == ACCEPTED and claim.fields["date_of_loss"] == "2026-03-04"
+    assert not v.readback.rstrip().endswith("?")
+
+
+def test_a_date_far_outside_cover_cannot_be_confirmed_away(claim):
+    accept_policy(claim, "BX7-4402")
+    assert claim.record("date_of_loss", "2026-06-01").status == REJECTED
+    assert claim.record("date_of_loss", "2026-06-01", confirmed=True).status == REJECTED
+    assert "date_of_loss" not in claim.fields
+
+
+def test_confirmed_cannot_skip_the_near_miss_question(claim):
+    accept_policy(claim, "BX7-4402")
+    v = claim.record("date_of_loss", "2026-03-04", confirmed=True)
+    assert v.status == UNCONFIRMED and "date_of_loss" not in claim.fields
+
+
 # --- an accepted field is not overwritten ---------------------------------
 
 def test_repeating_the_same_answer_changes_nothing(claim):
@@ -267,14 +299,45 @@ def test_the_second_policy_rejection_asks_for_nato(claim):
 
     second = claim.record("policy_number", "MACKKDK41138")
     assert second.status == REJECTED
-    assert "Bravo for B" in second.readback
+    assert "Say each letter as a word" in second.readback
     assert "two letters, a digit" not in second.readback
 
 
-def test_the_escalation_persists_and_then_the_nato_answer_lands(claim):
+def test_the_phonetic_examples_cannot_be_mistaken_for_an_answer(claim):
+    """The first version offered "Bravo for B, Kilo for K" while callers were
+    reading BX7- and KD4- numbers, and the letters came back in the transcript.
+    Examples must come from letters no policy uses."""
+    claim.record("policy_number", "junk")
+    ask = claim.record("policy_number", "more junk").readback
+
+    on_file = {c for p in POLICIES for c in p["policy_number"] if c.isalpha()}
+    from validators import NATO
+    offered = {c for c in NATO if f"for {c}" in ask}
+    assert offered, "the ask should still give examples"
+    assert not (offered & on_file), f"{offered & on_file} appear in a real policy"
+
+
+def test_the_phonetic_ask_is_made_once(claim):
+    """It was re-read on a live call after the number had already come
+    through."""
+    claim.record("policy_number", "junk")
+    assert "Say each letter as a word" in claim.record("policy_number", "junk2").readback
+    third = claim.record("policy_number", "junk3")
+    assert "Say each letter as a word" not in third.readback
+
+
+def test_no_phonetic_ask_once_a_value_has_come_through(claim):
+    """79.2s on the live call: the escalation was re-read after the value
+    landed."""
+    claim.record("policy_number", "junk")
+    claim.record("policy_number", "KD4-1188")          # held pending confirmation
+    later = claim.record("policy_number", "junk again")
+    assert "Say each letter as a word" not in later.readback
+
+
+def test_the_nato_answer_lands_after_the_ask(claim):
     claim.record("policy_number", "3841188")
-    claim.record("policy_number", "D411")
-    assert "Bravo for B" in claim.record("policy_number", "D42").readback
+    assert "Say each letter as a word" in claim.record("policy_number", "D411").readback
     nato = "Bravo X-ray seven four four zero two"
     assert claim.record("policy_number", nato).status == UNCONFIRMED
     ok = claim.record("policy_number", nato, confirmed=True)
@@ -286,7 +349,8 @@ def test_escalation_is_scoped_to_policy_numbers(claim):
     accept_policy(claim, "BX7-4420")
     claim.record("callback_phone", "nonsense")
     second = claim.record("callback_phone", "also nonsense")
-    assert second.status == REJECTED and "Bravo for B" not in second.readback
+    assert second.status == REJECTED
+    assert "Say each letter as a word" not in second.readback
 
 
 def test_unknown_field_is_rejected_not_crashed(claim):

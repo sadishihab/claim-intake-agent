@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from validators import (ACCEPTED, REJECTED, UNCONFIRMED, Verdict, load_policies,
+from validators import (ACCEPTED, NATO, REJECTED, UNCONFIRMED, Verdict, load_policies,
                         validate_callback_phone, validate_claimant_name,
                         validate_date_of_loss, validate_description,
                         validate_loss_type, validate_policy_number)
@@ -30,11 +30,10 @@ NEEDS_POLICY = ("claimant_name", "date_of_loss")
 # recognizer/answer-key note in CLAUDE.md.
 CONFIRM_FIELDS = ("policy_number",)
 
-# Said on the second rejection of a policy number. Repeating the format a third
-# time is what the agent did on a live call while the caller read "M-A-C-K-K-K-D";
-# the phonetic alphabet is the direction the readback already speaks fluently.
-NATO_RETRY = ("Let's try that a different way. Give me the two letters as words "
-              "-- Bravo for B, Kilo for K -- then the digits one at a time.")
+# Letters to draw escalation examples from. Never used by a real policy number,
+# checked at runtime, because an example the caller echoes back must not be
+# mistakable for an answer.
+EXAMPLE_LETTERS = "ZQVWY"
 
 
 def _plain(value):
@@ -57,6 +56,7 @@ class ClaimRecord:
         # (field, value) pairs we asked the caller to confirm. Resending one of
         # these is the answer to a question, not a retry loop.
         self._confirm_holds = set()
+        self._escalated = set()          # say the phonetic ask once, not every time
         self.session_id = None
         self.started_at = None   # wall clock, for the reader
         self._t0 = None          # monotonic, for durations
@@ -92,7 +92,10 @@ class ClaimRecord:
         verdict = verdict or self._validate(field, value)
         verdict = self._already_recorded(field, value, verdict, confirmed)
         verdict = self._needs_confirmation(field, value, verdict, confirmed)
+        verdict = self._promote_confirmed(field, value, verdict, confirmed)
         verdict = self._escalate(field, verdict)
+        if verdict.status == UNCONFIRMED and verdict.confirmable:
+            self._confirm_holds.add(self._hold_key(field, value))
         self.attempts.append({
             "at_seconds": self.elapsed(),
             "field": field,
@@ -161,8 +164,7 @@ class ClaimRecord:
             return verdict                      # same answer, nothing changes
         if confirmed:
             return verdict                      # the caller corrected it on purpose
-        self._confirm_holds.add(self._hold_key(field, value))
-        return replace(verdict, status=UNCONFIRMED,
+        return replace(verdict, status=UNCONFIRMED, confirmable=True,
                        reason=f"{field} is already recorded as "
                               f"{_plain(self.fields[field])!r}; this is a different answer",
                        readback="I already have an answer for that one. "
@@ -190,10 +192,23 @@ class ClaimRecord:
             # Accepted readbacks are never spoken, so this must not stay a
             # question the model is tempted to ask again.
             return replace(verdict, readback="Thanks, I have that.")
-        self._confirm_holds.add(self._hold_key(field, value))
-        return replace(verdict, status=UNCONFIRMED,
+        return replace(verdict, status=UNCONFIRMED, confirmable=True,
                        reason=verdict.reason + "; unconfirmed until the caller "
                               "agrees to the readback")
+
+    def _promote_confirmed(self, field, value, verdict, confirmed):
+        """A confirmable hold becomes accepted once the caller agrees to it.
+
+        Only for a value we actually put to them, so the flag cannot be used to
+        skip the question. A date a few days outside cover is the case this
+        exists for: worth asking about, not worth refusing outright.
+        """
+        if not (confirmed and verdict.status == UNCONFIRMED and verdict.confirmable):
+            return verdict
+        if self._hold_key(field, value) not in self._confirm_holds:
+            return verdict
+        return replace(verdict, status=ACCEPTED, readback="Thanks, I have that.",
+                       reason=verdict.reason + "; confirmed by the caller")
 
     def _escalate(self, field, verdict):
         """Change tack on a second rejection instead of repeating a sentence the
@@ -205,9 +220,37 @@ class ClaimRecord:
         """
         if field != "policy_number" or verdict.status != REJECTED:
             return verdict
-        already = sum(1 for a in self.attempts
-                      if a["field"] == field and a["status"] == REJECTED)
-        return verdict if already < 1 else replace(verdict, readback=NATO_RETRY)
+        # A value already came through, held or recorded, so there is nothing to
+        # escalate about. On a live call the agent re-read the phonetic request
+        # after the number had already landed.
+        if any(a["field"] == field and a["status"] in (ACCEPTED, UNCONFIRMED)
+               for a in self.attempts):
+            return verdict
+        if field in self._escalated:
+            return verdict                       # said once is enough
+        rejections = sum(1 for a in self.attempts
+                         if a["field"] == field and a["status"] == REJECTED)
+        if rejections < 1:
+            return verdict
+        self._escalated.add(field)
+        return replace(verdict, readback=self._phonetic_ask())
+
+    def _phonetic_ask(self):
+        """Ask for the phonetic alphabet without feeding letters back.
+
+        The first version offered "Bravo for B, Kilo for K" while callers were
+        reading BX7- and KD4- numbers -- the two letters most likely to be in
+        the answer. Examples now come only from letters that appear in no policy
+        on file, so one echoed back cannot be mistaken for an answer.
+        """
+        used = {c for p in self.policies for c in p["policy_number"] if c.isalpha()}
+        safe = [c for c in EXAMPLE_LETTERS if c not in used][:2]
+        if len(safe) < 2:
+            return ("Let's try that a different way. Say each letter as a word "
+                    "from the phonetic alphabet, then the digits one at a time.")
+        examples = ", ".join(f"{NATO[c]} for {c}" for c in safe)
+        return (f"Let's try that a different way. Say each letter as a word -- "
+                f"{examples}, that kind of thing -- then the digits one at a time.")
 
     def _validate(self, field, value):
         if field == "policy_number":

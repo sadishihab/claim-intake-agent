@@ -323,3 +323,25 @@ def test_accepted_readbacks_are_never_questions():
     for v in accepted:
         assert v.status == ACCEPTED
         assert not v.readback.rstrip().endswith("?"), v.readback
+
+
+@pytest.mark.parametrize("spoken,gap", [("2026-03-04", 3), ("2026-03-08", 7),
+                                        ("2025-02-25", 4)])
+def test_a_near_miss_date_is_asked_about_not_refused(spoken, gap):
+    """HALLOWAY's cover ran 2025-03-01 to 2026-03-01. A few days either side is
+    more often a caller misremembering than an uncovered claim."""
+    v = validate_date_of_loss(spoken, HALLOWAY, today=TODAY)
+    assert v.status == UNCONFIRMED and v.confirmable
+    assert f"{gap} day" in v.reason
+
+
+@pytest.mark.parametrize("spoken", ["2026-03-09", "2026-06-01", "2025-02-21"])
+def test_a_date_well_outside_cover_is_still_refused(spoken):
+    v = validate_date_of_loss(spoken, HALLOWAY, today=TODAY)
+    assert v.status == REJECTED and not v.confirmable
+
+
+def test_a_future_date_is_never_confirmable():
+    """A loss cannot have happened yet, so there is nothing to confirm."""
+    v = validate_date_of_loss("2027-01-01", RAGHUNATHAN, today=TODAY)
+    assert v.status == REJECTED and not v.confirmable

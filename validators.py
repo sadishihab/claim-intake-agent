@@ -22,6 +22,11 @@ ACCEPTED, UNCONFIRMED, REJECTED = "accepted", "unconfirmed", "rejected"
 # genuinely different holders score <=0.60. 0.80 sits in the empty gap.
 NAME_FUZZY_MIN = 0.80
 
+# A loss a few days outside cover is more often a caller misremembering the
+# date than a genuinely uncovered claim, so it is worth asking rather than
+# refusing. Far outside is a real answer and stays rejected.
+NEAR_MISS_DAYS = 7
+
 POLICIES_PATH = Path(__file__).with_name("policies.json")
 
 NATO = {
@@ -47,12 +52,19 @@ SPOKEN |= {"alfa": "A", "juliet": "J", "oh": "0"}
 
 @dataclass(frozen=True)
 class Verdict:
-    """status is one of ACCEPTED / UNCONFIRMED / REJECTED."""
+    """status is one of ACCEPTED / UNCONFIRMED / REJECTED.
+
+    `confirmable` separates the two kinds of unconfirmed. "Is this right?" can
+    be answered by sending the same value back with confirmed=True. "Which of
+    these?" cannot -- a yes does not resolve a choice -- so resending the same
+    words there is a retry loop.
+    """
 
     status: str
     value: Any
     reason: str
     readback: str
+    confirmable: bool = False
 
 
 class LossType(str, Enum):
@@ -186,6 +198,15 @@ def validate_date_of_loss(spoken: str, policy: dict, today: date | None = None) 
         return Verdict(REJECTED, None, f"{loss} is in the future",
                        f"{spoken_date} is in the future. When did it actually happen?")
     if loss < start or loss > end:
+        gap = (start - loss).days if loss < start else (loss - end).days
+        if gap <= NEAR_MISS_DAYS:
+            return Verdict(UNCONFIRMED, loss.isoformat(),
+                           f"{loss} is {gap} day(s) outside policy period "
+                           f"{start}..{end}",
+                           f"{spoken_date} is just outside this policy's cover, "
+                           f"which ran from {start:%d %B %Y} to {end:%d %B %Y}. "
+                           "Are you sure that's the right date?",
+                           confirmable=True)
         return Verdict(REJECTED, None, f"{loss} outside policy period {start}..{end}",
                        f"{spoken_date} falls outside this policy's cover, which ran "
                        f"from {start:%d %B %Y} to {end:%d %B %Y}.")
