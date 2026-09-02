@@ -284,11 +284,11 @@ def test_procfile_binds_the_platform_port():
 
 
 def test_the_key_is_read_once():
+    """The block was duplicated when protocol.py was split out of agent.py."""
     from pathlib import Path
 
     src = (Path(review.__file__).parent / "protocol.py").read_text()
     assert src.count("load_dotenv()") == 1
-    assert ".env" not in src.split("sys.exit(")[1].split(")")[0] or True
 
 
 # --- the comparison view --------------------------------------------------
@@ -334,3 +334,40 @@ def test_rendering_the_comparison_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(review, "CALLS", tmp_path / "calls")
     review.comparison()
     assert not (tmp_path / "calls").exists()
+
+
+# --- found by review ------------------------------------------------------
+
+def test_a_failed_call_does_not_leak_a_concurrency_slot(monkeypatch):
+    """The counter was incremented before the try that decrements it, and
+    ClaimRecord loads policies.json and can raise. Two failures and /ws/call
+    refuses every later connection until the server restarts."""
+    import asyncio
+
+    class Boom(Exception):
+        pass
+
+    def explode(**kw):
+        raise Boom("policies.json unreadable")
+
+    monkeypatch.setattr(review, "ClaimRecord", explode)
+
+    class FakeBrowser:
+        def __init__(self): self.sent = []
+        async def accept(self): pass
+        async def send_json(self, payload): self.sent.append(payload)
+        async def close(self): pass
+        async def receive(self): return {"type": "websocket.disconnect"}
+
+    before = review._in_flight
+    for _ in range(review.MAX_CALLS + 2):
+        asyncio.run(review.call(FakeBrowser()))
+        assert review._in_flight == before, "slot leaked"
+
+
+def test_the_panel_takes_its_field_order_from_the_protocol():
+    """Two copies of the schema order could drift; the tool enum and the Fields
+    table would then disagree about what the six fields are."""
+    import protocol
+
+    assert review.FIELDS is protocol.FIELDS

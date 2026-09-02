@@ -14,7 +14,7 @@ import os
 import re
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import FileResponse, StreamingResponse
 
 import protocol
@@ -25,8 +25,9 @@ CALLS = HERE / "calls"
 POLL_SECONDS = 0.3
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
-FIELDS = ["policy_number", "claimant_name", "date_of_loss",
-          "callback_phone", "loss_type", "description"]
+# The schema order the panel renders in. protocol.py owns it: the tool enum and
+# the Fields table must not be able to disagree about what the six fields are.
+FIELDS = protocol.FIELDS
 
 # Locked down by default. Forgetting this variable in production would expose
 # every caller's record; forgetting it locally only hides the picker.
@@ -255,7 +256,7 @@ async def call(browser: WebSocket):
                                  "message": "Too many calls in progress. Try again shortly."})
         return await browser.close()
     _in_flight += 1
-    claim = ClaimRecord(directory=CALLS)
+    claim = None
     ready, stop = asyncio.Event(), asyncio.Event()
 
     async def on_audio(pcm):
@@ -280,6 +281,9 @@ async def call(browser: WebSocket):
                     return stop.set()
 
     try:
+        # Inside the try: ClaimRecord loads policies.json and can raise, and a
+        # leak here is permanent -- the endpoint refuses every later call.
+        claim = ClaimRecord(directory=CALLS)
         async with protocol.connect() as ws:
             up = asyncio.create_task(pump_browser(ws))
             down = asyncio.create_task(
@@ -299,7 +303,7 @@ async def call(browser: WebSocket):
                                      "message": str(exc)})
     finally:
         _in_flight -= 1
-        if path := claim.write():
+        if claim is not None and (path := claim.write()):
             print(f"call record: {path} ({len(claim.attempts)} attempts)")
         with contextlib.suppress(Exception):
             await browser.close()
