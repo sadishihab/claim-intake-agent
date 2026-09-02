@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 import websockets
 from dotenv import load_dotenv
 
+from validators import load_policies
+
 load_dotenv()
 API_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 if not API_KEY:
@@ -31,6 +33,13 @@ load_dotenv()
 API_KEY = os.environ.get("ASSEMBLYAI_API_KEY")
 if not API_KEY:
     sys.exit("ASSEMBLYAI_API_KEY missing — put it in .env")
+
+# Bias transcription toward the policy-number shape. Measured against baseline,
+# transcription_prompt and max_accuracy: only this one moved anything. A spelled
+# TJ2-9002 comes back as "TJ too." without it and "TJ2-9002." with it -- and that
+# number is not on the list, so the bias is toward the pattern, not the strings.
+# The documented ceiling is 100 terms.
+KEYTERMS = [p["policy_number"] for p in load_policies()][:100]
 
 TOOLS = [{
     "type": "function",
@@ -92,7 +101,7 @@ SESSION = {
         "only — never say it aloud."),
     "greeting": "Hi, I can help you start a claim. Can I take your policy number?",
     "tools": TOOLS,
-    "input": {"format": {"encoding": "audio/pcm"}},
+    "input": {"format": {"encoding": "audio/pcm"}, "keyterms": KEYTERMS},
     "output": {"voice": "anna", "format": {"encoding": "audio/pcm"}},
 }
 

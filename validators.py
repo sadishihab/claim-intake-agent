@@ -38,6 +38,13 @@ DIGITS = {
 }
 
 
+# The readback direction already owns these tables; invert them so a caller who
+# answers in NATO is understood. "alfa"/"juliet" are common ASR spellings.
+SPOKEN = {word.lower().replace("-", ""): letter for letter, word in NATO.items()}
+SPOKEN |= {word: digit for digit, word in DIGITS.items()}
+SPOKEN |= {"alfa": "A", "juliet": "J", "oh": "0"}
+
+
 @dataclass(frozen=True)
 class Verdict:
     """status is one of ACCEPTED / UNCONFIRMED / REJECTED."""
@@ -93,8 +100,17 @@ POLICY_RE = re.compile(r"^[A-Z]{2}\d-\d{4}$")
 
 
 def normalize_policy_number(spoken: str) -> str:
-    """'bx7 4402' / 'BX74402' -> 'BX7-4402'. Shape is checked separately."""
-    raw = re.sub(r"[^A-Za-z0-9]", "", spoken or "").upper()
+    """'bx7 4402', 'BX74402', or 'Bravo X-ray seven four four zero two'
+    -> 'BX7-4402'. Shape is checked separately.
+
+    Phonetic words are resolved here rather than left to the model: once the
+    agent starts asking callers for the NATO alphabet, that is the form the
+    answers arrive in.
+    """
+    text = (spoken or "").lower().replace("-", " ")
+    text = text.replace("x ray", "xray")          # "X-ray" arrives as two tokens
+    text = re.sub(r"[a-z]+", lambda m: SPOKEN.get(m.group(0), m.group(0)), text)
+    raw = re.sub(r"[^A-Za-z0-9]", "", text).upper()
     return f"{raw[:3]}-{raw[3:]}" if len(raw) == 7 else raw
 
 

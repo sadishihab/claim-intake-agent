@@ -13,6 +13,7 @@ attempt in order so a reviewer can see what was said before a field stuck.
 
 import json
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -23,6 +24,12 @@ from validators import (ACCEPTED, REJECTED, UNCONFIRMED, Verdict, load_policies,
                         validate_loss_type, validate_policy_number)
 
 NEEDS_POLICY = ("claimant_name", "date_of_loss")
+
+# Said on the second rejection of a policy number. Repeating the format a third
+# time is what the agent did on a live call while the caller read "M-A-C-K-K-K-D";
+# the phonetic alphabet is the direction the readback already speaks fluently.
+NATO_RETRY = ("Let's try that a different way. Give me the two letters as words "
+              "-- Bravo for B, Kilo for K -- then the digits one at a time.")
 
 
 def _plain(value):
@@ -68,6 +75,7 @@ class ClaimRecord:
 
     def record(self, field, value):
         verdict = self._resent_unconfirmed(field, value) or self._validate(field, value)
+        verdict = self._escalate(field, verdict)
         self.attempts.append({
             "at_seconds": self.elapsed(),
             "field": field,
@@ -113,6 +121,20 @@ class ClaimRecord:
             f"{field} was already sent as {value!r} and came back unconfirmed; "
             "ask the caller to choose and send their answer, not this value again",
             asked["readback"])
+
+    def _escalate(self, field, verdict):
+        """Change tack on a second rejection instead of repeating a sentence the
+        caller has already failed to act on.
+
+        Only the readback changes: it is the one thing the agent speaks verbatim,
+        so putting the new question there is more reliable than asking the prompt
+        to remember to switch.
+        """
+        if field != "policy_number" or verdict.status != REJECTED:
+            return verdict
+        already = sum(1 for a in self.attempts
+                      if a["field"] == field and a["status"] == REJECTED)
+        return verdict if already < 1 else replace(verdict, readback=NATO_RETRY)
 
     def _validate(self, field, value):
         if field == "policy_number":

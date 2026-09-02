@@ -140,6 +140,37 @@ def test_the_repeat_is_visible_in_the_call_record(claim):
     assert statuses == [UNCONFIRMED, REJECTED]
 
 
+# --- changing tack after a rejection -------------------------------------
+
+def test_the_second_policy_rejection_asks_for_nato(claim):
+    """The live call repeated the format three times while the caller read
+    'M-A-C-K-K-K-D'. The second rejection should change the question."""
+    first = claim.record("policy_number", "3841188")
+    assert first.status == REJECTED
+    assert "two letters" in first.readback          # unchanged on the first try
+
+    second = claim.record("policy_number", "MACKKDK41138")
+    assert second.status == REJECTED
+    assert "Bravo for B" in second.readback
+    assert "two letters, a digit" not in second.readback
+
+
+def test_the_escalation_persists_and_then_the_nato_answer_lands(claim):
+    claim.record("policy_number", "3841188")
+    claim.record("policy_number", "D411")
+    assert "Bravo for B" in claim.record("policy_number", "D42").readback
+    ok = claim.record("policy_number", "Bravo X-ray seven four four zero two")
+    assert ok.status == ACCEPTED and claim.fields["policy_number"] == "BX7-4402"
+
+
+def test_escalation_is_scoped_to_policy_numbers(claim):
+    """Other fields have their own recovery wording; NATO is for letters."""
+    claim.record("policy_number", "BX7-4420")
+    claim.record("callback_phone", "nonsense")
+    second = claim.record("callback_phone", "also nonsense")
+    assert second.status == REJECTED and "Bravo for B" not in second.readback
+
+
 def test_unknown_field_is_rejected_not_crashed(claim):
     for bad in ("favourite_colour", None, ""):
         assert claim.record(bad, "x").status == REJECTED

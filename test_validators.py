@@ -74,6 +74,26 @@ def test_readback_uses_nato_and_single_digits():
     assert "Bravo X-ray seven" in validate_policy_number("BX7-4402", POLICIES).readback
 
 
+@pytest.mark.parametrize("spoken,expected", [
+    ("Bravo X-ray seven, four four zero two", "BX7-4402"),
+    ("bravo x-ray seven four four two zero", "BX7-4420"),
+    ("Kilo Delta four one one eight eight", "KD4-1188"),
+    ("Tango Juliet two nine zero zero one", "TJ2-9001"),   # ASR drops a 't'
+    ("Tango Juliett two, nine zero zero one", "TJ2-9001"),
+])
+def test_a_caller_answering_in_nato_is_understood(spoken, expected):
+    """Once the agent starts asking for the phonetic alphabet, that is the form
+    answers arrive in. The confusable pair must still separate: 'four four zero
+    two' and 'four four two zero' are different policies."""
+    v = validate_policy_number(spoken, POLICIES)
+    assert v.status == ACCEPTED and v.value == expected
+
+
+def test_nato_decoding_does_not_swallow_ordinary_words():
+    for junk in ("hello", "my policy is somewhere", "BX7-440", ""):
+        assert validate_policy_number(junk, POLICIES).status == REJECTED
+
+
 def test_normalize_is_idempotent():
     assert normalize_policy_number(normalize_policy_number("bx7 4402")) == "BX7-4402"
 

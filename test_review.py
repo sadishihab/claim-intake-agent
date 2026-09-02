@@ -162,3 +162,26 @@ def test_the_worklet_resamples_and_batches():
     js = (Path(review.__file__).parent / "pcm-processor.js").read_text()
     assert "inputSampleRate / targetSampleRate" in js
     assert "chunkSamples" in js and "this.filled" in js
+
+
+# --- transcription config ------------------------------------------------
+
+def test_keyterms_track_the_policy_database():
+    """Measured as the only lever that moved anything, so it is the only one
+    carried. Derived from policies.json rather than hardcoded, so adding a
+    policy biases transcription toward it automatically."""
+    import protocol
+    from validators import load_policies
+
+    expected = [p["policy_number"] for p in load_policies()]
+    assert protocol.SESSION["input"]["keyterms"] == expected
+    assert len(protocol.KEYTERMS) <= 100, "documented ceiling"
+
+
+def test_the_levers_that_did_nothing_are_not_carried():
+    """transcription_prompt and max_accuracy showed no measurable effect across
+    12 clips each; no reason to ship config that does nothing."""
+    import protocol
+
+    assert "transcription_prompt" not in protocol.SESSION["input"]
+    assert "transcription_mode" not in protocol.SESSION["input"]
