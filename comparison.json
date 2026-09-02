@@ -1,15 +1,15 @@
 {
-  "note": "Every utterance below is verbatim from calls/ and events.jsonl. The naive column is the value the model extracted from the transcript; the validated column is computed live by the real validators, so it cannot drift from the code.",
+  "note": "Every utterance below is verbatim from calls/ and events.jsonl. The naive column is the value the model extracted from the transcript. The validated column is computed by the real validators when this page loads, so it cannot drift away from the code.",
   "scenes": [
     {
       "headline": true,
       "field": "policy_number",
-      "caller": "reading a policy number that is not on file",
+      "caller": "reading a policy number aloud",
       "partials": ["Yes, my policy number is C411.",
                    "Yes, my policy number is KD4-1188."],
       "transcript": "Yes, my policy number is KD4-1188.",
       "naive": "KD4-1188",
-      "why": "Transcription was biased toward the list of real policy numbers, so the recognizer rewrote a wrong number into a real one. The exact-match check passed because the match had been manufactured: the validator was structurally powerless. Only reading the value back catches this."
+      "why": "The recognizer's first reading of this utterance was C411. Its final answer was KD4-1188, a real policy on file, belonging to someone else. Transcription had been biased toward the list of valid policy numbers, so the recognizer could revise a number it was unsure of onto one of them. The exact-match check then passed on a match that transcription had manufactured. A validator is handed a value and a database, and it cannot ask where the value came from. Reading the number back to the caller is what catches this."
     },
     {
       "field": "policy_number",
@@ -25,7 +25,7 @@
       "partials": ["bravo x-ray seven, four four two zero"],
       "transcript": "bravo x-ray seven, four four two zero",
       "naive": "BX7-4420",
-      "why": "BX7-4420 and BX7-4402 are both real policies belonging to different people. The readback separates them audibly: 'four four two zero' against 'four four zero two'."
+      "why": "BX7-4420 and BX7-4402 are both real policies belonging to different people. The readback separates them audibly. 'Four four two zero' against 'four four zero two'."
     },
     {
       "field": "claimant_name",
@@ -34,7 +34,7 @@
       "partials": ["Dennis Holloway."],
       "transcript": "Dennis Holloway.",
       "naive": "Dennis Holloway",
-      "why": "The holder is Denise Holloway. One letter apart is a mishearing, not a different person, so it is worth asking rather than either accepting or refusing."
+      "why": "The holder is Denise Holloway. A name one letter away is usually a mishearing rather than a second person, so it is worth asking about. Accepting it and refusing it are both guesses."
     },
     {
       "field": "date_of_loss",
@@ -43,7 +43,7 @@
       "partials": ["1st June."],
       "transcript": "1st June.",
       "naive": "1st June",
-      "why": "A date without a year is not a date. Guessing the current year would silently decide whether the claim falls inside the policy period."
+      "why": "A date without a year is not a date yet. Filling in the current year would silently decide whether the claim falls inside the policy period."
     },
     {
       "field": "loss_type",
