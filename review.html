@@ -231,7 +231,7 @@ el("picker").addEventListener("change", async e => {
 // frames and reply audio comes back the same way, so the API key stays there.
 
 const RATE = 24000;
-let callWS = null, micCtx = null, outCtx = null, micStream = null;
+let callWS = null, ctx = null, micStream = null;
 let playAt = 0, scheduled = [];
 
 function turn(who, text, partial) {
@@ -259,12 +259,14 @@ function play(pcmBytes) {
   const pcm16 = new Int16Array(pcmBytes);
   const float32 = new Float32Array(pcm16.length);
   for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
-  const buffer = outCtx.createBuffer(1, float32.length, RATE);
+  // Buffer is 24 kHz; the context resamples on output, so this is correct at
+  // whatever rate the device runs at.
+  const buffer = ctx.createBuffer(1, float32.length, RATE);
   buffer.getChannelData(0).set(float32);
-  const src = outCtx.createBufferSource();
+  const src = ctx.createBufferSource();
   src.buffer = buffer;
-  src.connect(outCtx.destination);
-  playAt = Math.max(playAt, outCtx.currentTime);
+  src.connect(ctx.destination);
+  playAt = Math.max(playAt, ctx.currentTime);
   src.start(playAt);
   playAt += buffer.duration;
   scheduled.push(src);
@@ -275,7 +277,7 @@ function flushPlayback() {
   // Barge-in: drop queued speech so the caller doesn't hear a stale sentence.
   for (const src of scheduled) { try { src.stop(); } catch {} }
   scheduled = [];
-  playAt = outCtx ? outCtx.currentTime : 0;
+  playAt = ctx ? ctx.currentTime : 0;
 }
 
 async function startCall() {
@@ -288,15 +290,21 @@ async function startCall() {
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: false } });
 
-  micCtx = new AudioContext({ sampleRate: RATE });
-  outCtx = new AudioContext({ sampleRate: RATE });
-  await micCtx.resume(); await outCtx.resume();
-  await micCtx.audioWorklet.addModule("/pcm-processor.js");
-  playAt = outCtx.currentTime;
+  // One context, at the device's own rate, for both capture and playback.
+  // Forcing 24 kHz here would put us in a separate MediaTrackGraph: Firefox
+  // makes one graph per sample rate, and only the DEFAULT graph's output is
+  // fed to the echo canceller, so the agent would hear itself and interrupt
+  // itself on every reply. Rate conversion happens in the worklet on the way
+  // in and in createBuffer on the way out.
+  ctx = new AudioContext();
+  await ctx.resume();
+  await ctx.audioWorklet.addModule("/pcm-processor.js");
+  playAt = ctx.currentTime;
 
-  const worklet = new AudioWorkletNode(micCtx, "pcm-processor", {
-    processorOptions: { inputSampleRate: micCtx.sampleRate, targetSampleRate: RATE } });
-  micCtx.createMediaStreamSource(micStream).connect(worklet);
+  const worklet = new AudioWorkletNode(ctx, "pcm-processor", {
+    processorOptions: { inputSampleRate: ctx.sampleRate, targetSampleRate: RATE,
+                        chunkSamples: RATE / 20 } });   // ~50 ms, as the docs advise
+  ctx.createMediaStreamSource(micStream).connect(worklet);
   // Not connected to destination: that would loop the mic back to the speakers.
 
   callState("Connecting…");
@@ -334,8 +342,8 @@ function endCall(remote) {
     callWS.send(JSON.stringify({ action: "hangup" }));
   }
   micStream?.getTracks().forEach(t => t.stop());
-  micCtx?.close(); outCtx?.close();
-  callWS = null; micCtx = null; outCtx = null; micStream = null; scheduled = [];
+  ctx?.close();
+  callWS = null; ctx = null; micStream = null; scheduled = [];
   el("start").textContent = "Start call";
   el("start").classList.remove("on");
   el("start").disabled = false;

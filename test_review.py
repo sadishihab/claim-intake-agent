@@ -135,3 +135,30 @@ def test_browser_assets_carry_no_credentials(name):
 def test_the_call_socket_is_registered():
     paths = [getattr(r, "path", "") for r in review.app.routes]
     assert "/ws/call" in paths and "/pcm-processor.js" in paths
+
+
+def test_the_page_does_not_force_an_audiocontext_sample_rate():
+    """Firefox builds one MediaTrackGraph per sample rate (bug 1387454) and
+    feeds only the DEFAULT graph's output to the echo canceller (bug 1849108).
+    Forcing 24 kHz put playback in its own graph, so the agent heard itself:
+    70% of caller turns in a live call were verbatim copies of the agent's own
+    speech. Capture resamples in the worklet instead, playback in createBuffer.
+    """
+    import re
+    from pathlib import Path
+
+    page = (Path(review.__file__).parent / "review.html").read_text()
+    assert "new AudioContext()" in page, "context must use the device rate"
+    assert not re.search(r"new AudioContext\s*\(\s*\{", page), \
+        "a forced sampleRate splits the graph and breaks echo cancellation"
+    assert page.count("new AudioContext") == 1, "one context, one graph"
+
+
+def test_the_worklet_resamples_and_batches():
+    """The worklet is the only thing converting to 24 kHz now, and it must
+    batch: at 48 kHz a 128-frame process() call is 2.7 ms of audio."""
+    from pathlib import Path
+
+    js = (Path(review.__file__).parent / "pcm-processor.js").read_text()
+    assert "inputSampleRate / targetSampleRate" in js
+    assert "chunkSamples" in js and "this.filled" in js
